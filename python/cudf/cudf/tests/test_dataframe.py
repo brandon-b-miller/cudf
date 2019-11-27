@@ -4110,3 +4110,29 @@ def test_cov_nans():
     gdf = gd.from_pandas(pdf)
 
     assert_eq(pdf.cov(), gdf.cov())
+
+
+@pytest.mark.parametrize("sr_data", [[1,2,3]])
+def test_df_sr_binop(sr_data):
+    gdf = DataFrame({0: [0,0,0], 1:[0,0,0], 2:[0,0,0]})
+    pdf = gdf.to_pandas()
+
+    gsr = Series(sr_data)
+    psr = gsr.to_pandas()
+
+    expect = pdf + psr
+    got = gdf + gsr
+    assert_eq(expect, got)
+
+    expect = pdf - psr
+    got = gdf - gsr
+    assert_eq(expect, got)
+
+    expect = pdf * psr
+    got = gdf * gsr
+    assert_eq(expect, got)
+
+    expect = pdf / psr
+    got = gdf / gsr
+    assert_eq(expect, got)
+
