@@ -99,7 +99,7 @@ class DataFrame(Frame, Serializable):
     @annotate("DATAFRAME_INIT", color="blue", domain="cudf_python")
     def __init__(self, data=None, index=None, columns=None, dtype=None):
         """
-        A GPU Dataframe object.
+        A GPU Dataframe object!
 
         Parameters
         ----------
