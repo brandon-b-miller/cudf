@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2020, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2021, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/concatenate.hpp>
 #include <cudf/copying.hpp>
+#include <cudf/detail/iterator.cuh>
 #include <cudf/dictionary/encode.hpp>
 #include <cudf/fixed_point/fixed_point.hpp>
 #include <cudf/lists/lists_column_view.hpp>
@@ -35,6 +36,7 @@
 #include <rmm/device_buffer.hpp>
 
 #include <thrust/copy.h>
+#include <thrust/iterator/constant_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 
@@ -45,32 +47,6 @@
 
 namespace cudf {
 namespace test {
-/**
- * @brief Convenience wrapper for creating a `thrust::transform_iterator` over a
- * `thrust::counting_iterator`.
- *
- * Example:
- * @code{.cpp}
- * // Returns square of the value of the counting iterator
- * auto iter = make_counting_transform_iterator(0, [](auto i){ return (i * i);});
- * iter[0] == 0
- * iter[1] == 1
- * iter[2] == 4
- * ...
- * iter[n] == n * n
- * @endcode
- *
- * @param start The starting value of the counting iterator
- * @param f The unary function to apply to the counting iterator.
- * This should be a host function and not a device function.
- * @return auto A transform iterator that applies `f` to a counting iterator
- */
-template <typename UnaryFunction>
-auto make_counting_transform_iterator(cudf::size_type start, UnaryFunction f)
-{
-  return thrust::make_transform_iterator(thrust::make_counting_iterator(start), f);
-}
-
 namespace detail {
 /**
  * @brief Base class for a wrapper around a `cudf::column`.
@@ -118,7 +94,7 @@ struct fixed_width_type_converter {
   template <typename FromT                                                        = From,
             typename ToT                                                          = To,
             typename std::enable_if<std::is_same<FromT, ToT>::value, void>::type* = nullptr>
-  ToT operator()(FromT element) const
+  constexpr ToT operator()(FromT element) const
   {
     return element;
   }
@@ -130,7 +106,7 @@ struct fixed_width_type_converter {
                                       (cudf::is_convertible<FromT, ToT>::value ||
                                        std::is_constructible<ToT, FromT>::value),
                                     void>::type* = nullptr>
-  ToT operator()(FromT element) const
+  constexpr ToT operator()(FromT element) const
   {
     return static_cast<ToT>(element);
   }
@@ -141,7 +117,7 @@ struct fixed_width_type_converter {
     typename ToT                         = To,
     typename std::enable_if<std::is_integral<FromT>::value && cudf::is_timestamp_t<ToT>::value,
                             void>::type* = nullptr>
-  ToT operator()(FromT element) const
+  constexpr ToT operator()(FromT element) const
   {
     return ToT{typename ToT::duration{element}};
   }
@@ -216,7 +192,8 @@ rmm::device_buffer make_elements(InputIterator begin, InputIterator end)
 {
   using namespace numeric;
   using RepType = typename ElementTo::rep;
-  auto to_rep   = [](ElementTo fp) { return static_cast<scaled_integer<RepType>>(fp).value; };
+
+  auto to_rep            = [](ElementTo fp) { return fp.value(); };
   auto transformer_begin = thrust::make_transform_iterator(begin, to_rep);
   auto const size        = cudf::distance(begin, end);
   auto const elements = thrust::host_vector<RepType>(transformer_begin, transformer_begin + size);
@@ -511,9 +488,9 @@ class fixed_point_column_wrapper : public detail::column_wrapper {
    *
    * Example:
    * @code{.cpp}
-   * // Creates a non-nullable column of INT32 elements with 5 elements: {0, 2, 4, 6, 8}
+   * // Creates a non-nullable column of DECIMAL32 elements with 5 elements: {0, 2, 4, 6, 8}
    * auto elements = make_counting_transform_iterator(0, [](auto i) { return i * 2;});
-   * auto w = fixed_width_column_wrapper<int32_t>(elements, elements + 5, scale_type{0});
+   * auto w = fixed_point_column_wrapper<int32_t>(elements, elements + 5, scale_type{0});
    * @endcode
    *
    * @tparam FixedPointRepIterator Iterator for fixed_point::rep
@@ -722,7 +699,7 @@ class strings_column_wrapper : public detail::column_wrapper {
   {
     std::vector<char> chars;
     std::vector<cudf::size_type> offsets;
-    auto all_valid           = make_counting_transform_iterator(0, [](auto i) { return true; });
+    auto all_valid           = thrust::make_constant_iterator(true);
     std::tie(chars, offsets) = detail::make_chars_and_offsets(begin, end, all_valid);
     wrapped                  = cudf::make_strings_column(chars, offsets);
   }
@@ -1052,6 +1029,16 @@ class dictionary_column_wrapper<std::string> : public detail::column_wrapper {
    * @brief Cast to dictionary_column_view
    */
   operator dictionary_column_view() const { return cudf::dictionary_column_view{wrapped->view()}; }
+
+  /**
+   * @brief Access keys column view
+   */
+  column_view keys() const { return cudf::dictionary_column_view{wrapped->view()}.keys(); }
+
+  /**
+   * @brief Access indices column view
+   */
+  column_view indices() const { return cudf::dictionary_column_view{wrapped->view()}.indices(); }
 
   /**
    * @brief Default constructor initializes an empty dictionary column of strings
@@ -1465,7 +1452,7 @@ class lists_column_wrapper : public detail::column_wrapper {
   void build_from_nested(std::initializer_list<lists_column_wrapper<T, SourceElementT>> elements,
                          std::vector<bool> const& v)
   {
-    auto valids = cudf::test::make_counting_transform_iterator(
+    auto valids = cudf::detail::make_counting_transform_iterator(
       0, [&v](auto i) { return v.empty() ? true : v[i]; });
 
     // compute the expected hierarchy and depth
@@ -1742,7 +1729,7 @@ class structs_column_wrapper : public detail::column_wrapper {
    *
    * struct_column_wrapper struct_column_wrapper{
    *  {child_int_col_wrapper, child_string_col_wrapper}
-   *  cudf::test::make_counting_transform_iterator(0, [](auto i){ return i%2; }) // Validity.
+   *  cudf::detail::make_counting_transform_iterator(0, [](auto i){ return i%2; }) // Validity.
    * };
    *
    * auto struct_col {struct_column_wrapper.release()};

@@ -1,5 +1,5 @@
 #=============================================================================
-# Copyright (c) 2018-2020, NVIDIA CORPORATION.
+# Copyright (c) 2018-2021, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -164,8 +164,8 @@ ConfigureBench(SEARCH_BENCH "${SEARCH_BENCH_SRC}")
 # - sort benchmark --------------------------------------------------------------------------------
 
 set(SORT_BENCH_SRC
-  "${CMAKE_CURRENT_SOURCE_DIR}/sort/sort_benchmark.cu"
-  "${CMAKE_CURRENT_SOURCE_DIR}/sort/sort_strings_benchmark.cu")
+  "${CMAKE_CURRENT_SOURCE_DIR}/sort/sort_benchmark.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/sort/sort_strings_benchmark.cpp")
 
 ConfigureBench(SORT_BENCH "${SORT_BENCH_SRC}")
 
@@ -181,6 +181,8 @@ ConfigureBench(TYPE_DISPATCHER_BENCH "${TD_BENCH_SRC}")
 # - reduction benchmark ---------------------------------------------------------------------------
 
 set(REDUCTION_BENCH_SRC
+  "${CMAKE_CURRENT_SOURCE_DIR}/reduction/anyall_benchmark.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/reduction/dictionary_benchmark.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/reduction/reduce_benchmark.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/reduction/minmax_benchmark.cpp")
 
@@ -300,9 +302,13 @@ set(SUBWORD_TOKENIZER_BENCH_SRC
 ConfigureBench(SUBWORD_TOKENIZER_BENCH "${SUBWORD_TOKENIZER_BENCH_SRC}")
 
 ###################################################################################################
-# - convert to string benchmark -------------------------------------------------------------------
+# - strings benchmark -------------------------------------------------------------------
 
-set(DURATION_TO_STRING_BENCH_SRC
-  "${CMAKE_CURRENT_SOURCE_DIR}/string/convert_durations_benchmark.cpp")
+set(STRINGS_BENCH_SRC
+  "${CMAKE_CURRENT_SOURCE_DIR}/string/case_benchmark.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/string/contains_benchmark.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/string/convert_durations_benchmark.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/string/replace_benchmark.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/string/url_decode_benchmark.cpp")
 
-ConfigureBench(DURATION_TO_STRING_BENCH "${DURATION_TO_STRING_BENCH_SRC}")
+ConfigureBench(STRINGS_BENCH "${STRINGS_BENCH_SRC}")
