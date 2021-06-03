@@ -147,13 +147,16 @@ class _SeriesLocIndexer(object):
             ):
                 result = result.iloc[0]
             return result
-        try:
-            arg = self._loc_to_iloc(arg)
-        except (TypeError, KeyError, IndexError, ValueError):
+        loc_or_locs = self._loc_to_iloc(arg)
+        results = self._sr.iloc[loc_or_locs]
+        if cudf.utils.dtypes.is_scalar(results):
+            return results
+        if len(results) == 0:
             raise KeyError(arg)
-
-        return self._sr.iloc[arg]
-
+        if len(results) == 1 and cudf.utils.dtypes.is_scalar(arg):
+            return cudf._lib.copying.get_element(results._column, 0).value
+        else:
+            return results
     def __setitem__(self, key, value):
         try:
             key = self._loc_to_iloc(key)
@@ -174,6 +177,7 @@ class _SeriesLocIndexer(object):
         self._sr.iloc[key] = value
 
     def _loc_to_iloc(self, arg):
+
         if is_scalar(arg):
             if not is_numerical_dtype(self._sr.index.dtype):
                 # TODO: switch to cudf.utils.dtypes.is_integer(arg)
@@ -185,13 +189,8 @@ class _SeriesLocIndexer(object):
                 elif pd.api.types.is_integer(arg):
                     found_index = arg
                     return found_index
-            try:
-                found_index = self._sr.index._values.find_first_value(
-                    arg, closest=False
-                )
-                return found_index
-            except (TypeError, KeyError, IndexError, ValueError):
-                raise KeyError("label scalar is out of bound")
+            breakpoint()
+            return cudf._lib.binaryop.binaryop(self._sr.index._values, cudf.Scalar(arg, dtype=self._sr.index._values.dtype), 'eq', np.dtype('bool'))
 
         elif isinstance(arg, slice):
             return get_label_range_or_mask(
