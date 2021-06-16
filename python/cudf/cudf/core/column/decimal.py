@@ -220,6 +220,8 @@ class DecimalColumn(NumericalBaseColumn):
         # Have to ignore typing here because it misdiagnoses super().
         return super()._copy_type_metadata(other)  # type: ignore
 
+    def _get_reduction_dtype(self, op):
+        return self.dtype
 
 def _binop_scale(l_dtype, r_dtype, op):
     # This should at some point be hooked up to libcudf's

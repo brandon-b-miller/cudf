@@ -274,6 +274,22 @@ class NumericalColumn(NumericalBaseColumn):
 
         return lhs, rhs
 
+    def _get_reduction_dtype(self, op):
+            '''
+            Resolve what dtype to return based off the columns 
+            own dtype and the op in question.
+            '''
+            if op == 'sum':
+                if self.dtype.kind == 'f':
+                    return np.dtype('float64')
+                elif self.dtype.kind in 'bui':
+                    return np.dtype('int64')
+                
+            elif op in {'sum_of_squares', 'product'} and not isinstance(self.dtype, cudf.Decimal64Dtype):
+                return np.find_common_type([self.dtype], [np.uint64])
+            else:
+                return self.dtype
+
     def default_na_value(self) -> ScalarLike:
         """Returns the default NA value for this column
         """

@@ -35,14 +35,7 @@ def reduce(reduction_op, Column incol, dtype=None, **kwargs):
         to the same type as the input column
     """
 
-    col_dtype = incol.dtype
-    if (
-        reduction_op in ['sum', 'sum_of_squares', 'product']
-        and not is_decimal_dtype(col_dtype)
-    ):
-        col_dtype = np.find_common_type([col_dtype], [np.uint64])
-    col_dtype = col_dtype if dtype is None else dtype
-
+    col_dtype = dtype if dtype is not None else incol.dtype
     cdef column_view c_incol_view = incol.view()
     cdef unique_ptr[scalar] c_result
     cdef Aggregation cython_agg = make_aggregation(reduction_op, kwargs)

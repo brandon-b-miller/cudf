@@ -30,7 +30,7 @@ def test_sum(dtype, nelem):
     sr = Series(data)
 
     got = sr.sum()
-    expect = dtype(data.sum())
+    expect = data.sum()
 
     significant = 4 if dtype == np.float32 else 6
     np.testing.assert_approx_equal(expect, got, significant=significant)

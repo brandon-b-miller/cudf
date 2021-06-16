@@ -33,6 +33,7 @@ class NumericalBaseColumn(ColumnBase):
         skipna : bool
             Whether or not na values must be
         """
+        kwargs['dtype'] = kwargs.get('dtype') or self._get_reduction_dtype(op)
         preprocessed = self._process_for_reduction(
             skipna=skipna, min_count=min_count
         )
