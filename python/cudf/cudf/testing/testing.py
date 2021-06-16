@@ -211,10 +211,13 @@ def assert_column_equal(
             left = left.astype(left.categories.dtype)
             right = right.astype(right.categories.dtype)
     if not columns_equal:
-        msg1 = f"{left.to_array()}"
-        msg2 = f"{right.to_array()}"
+        msg1 = f"{list(left.to_pandas(nullable=True).array)}"
+        msg2 = f"{list(right.to_pandas(nullable=True).array)}"
         try:
-            diff = left.apply_boolean_mask(left != right).size
+            diff = left.apply_boolean_mask(
+                left.binary_operator("NULL_EQUALS", right)
+                == cudf.Scalar(False)
+            ).size
             diff = diff * 100.0 / left.size
         except BaseException:
             diff = 100.0
