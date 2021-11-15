@@ -87,6 +87,7 @@ cdef class Column:
         self.set_base_children(children)
         self.set_base_data(data)
         self.set_base_mask(mask)
+        self._parent = None
 
     @property
     def base_size(self):

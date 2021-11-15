@@ -328,6 +328,9 @@ def column_slice(Column input_column, object indices):
             c_result[i],
             input_column) for i in range(num_of_result_cols)]
 
+    for col in result:
+        col._parent = input_column
+
     return result
 
 
