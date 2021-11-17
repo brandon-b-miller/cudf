@@ -358,18 +358,25 @@ def table_slice(input_table, object indices, bool keep_index=True):
         )
 
     num_of_result_cols = c_result.size()
-    return [
-        data_from_table_view(
+
+    result = [None] * int(num_of_result_cols)
+    for i in range(num_of_result_cols):
+        this_result = data_from_table_view(
             c_result[i],
             input_table,
-            column_names=input_table._column_names,
+            column_names = input_table._column_names,
             index_names=(
                 input_table._index._column_names if (
                     keep_index is True)
                 else None
             )
-        ) for i in range(num_of_result_cols)]
+        )
+        for colname, col in this_result[0].items():
+            col._parent = input_table[colname]._column
 
+        result[i] = this_result
+
+    return result
 
 def column_split(Column input_column, object splits):
 

@@ -382,6 +382,7 @@ class ColumnBase(Column, Serializable):
         if fill_value is None and not self.nullable:
             mask = create_null_mask(self.size, state=MaskState.ALL_VALID)
             self.set_base_mask(mask)
+            self._parent.set_base_mask(mask)
 
         libcudf.filling.fill_in_place(self, begin, end, fill_scalar)
 
