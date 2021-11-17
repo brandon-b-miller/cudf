@@ -209,6 +209,10 @@ cdef class Column:
         self._base_mask = value
         self._clear_cache()
 
+        # if this is a slice, the original column should be updated
+        if self._parent:
+            self._parent.set_base_mask(value)
+
     def _clear_cache(self):
         self._distinct_count = {}
         self._cached_sizeof = None
