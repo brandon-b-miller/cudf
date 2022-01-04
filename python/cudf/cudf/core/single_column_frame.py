@@ -329,6 +329,9 @@ class SingleColumnFrame(Frame):
         if isinstance(other, SingleColumnFrame):
             other = other._column
         elif not _is_scalar_or_zero_d_array(other):
+            # Prevent bouncing to numpy's dtype comparison mechanism
+            if isinstance(other, np.dtype):
+                raise TypeError("Invalid binop")
             # Non-scalar right operands are valid iff they convert to columns.
             try:
                 other = as_column(other)
