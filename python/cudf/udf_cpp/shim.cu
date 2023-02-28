@@ -741,45 +741,6 @@ extern "C" void NRT_MemSys_set_allocator(NRT_malloc_func malloc_func,
   TheMSys.allocator.free = free_func;
 }
 
-/* This value is used as a marker for "stats are disabled", it's ASCII "AAAA" */
-static size_t _DISABLED_STATS_VALUE = 0x41414141;
-
-extern "C" size_t NRT_MemSys_get_stats_alloc()
-{
-  if (TheMSys.stats.enabled) {
-    return TheMSys.stats.alloc.load();
-  } else {
-    return _DISABLED_STATS_VALUE;
-  }
-}
-
-extern "C" size_t NRT_MemSys_get_stats_free()
-{
-  if (TheMSys.stats.enabled) {
-    return TheMSys.stats.free.load();
-  } else {
-    return _DISABLED_STATS_VALUE;
-  }
-}
-
-extern "C" size_t NRT_MemSys_get_stats_mi_alloc()
-{
-  if (TheMSys.stats.enabled) {
-    return TheMSys.stats.mi_alloc.load();
-  } else {
-    return _DISABLED_STATS_VALUE;
-  }
-}
-
-extern "C" size_t NRT_MemSys_get_stats_mi_free()
-{
-  if (TheMSys.stats.enabled) {
-    return TheMSys.stats.mi_free.load();
-  } else {
-    return _DISABLED_STATS_VALUE;
-  }
-}
-
 /*
  * The MemInfo structure.
  */
@@ -793,15 +754,12 @@ extern "C" __device__ void CUDANRT_MemInfo_init(CUDAMemInfo* mi,
   mi->dtor  = dtor;
   mi->data  = data;
   mi->size  = size;
-  /* Update stats */
-  if (TheMSys.stats.enabled) { TheMSys.stats.mi_alloc++; }
 }
 
 extern "C" __device__ void* CUDANRT_Allocate_External(size_t size)
 {
   void* ptr = NULL;
   ptr       = TheMSys.allocator.malloc(size);
-  if (TheMSys.stats.enabled) { TheMSys.stats.alloc++; }
   return ptr;
 }
 
