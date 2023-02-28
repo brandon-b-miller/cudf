@@ -651,3 +651,330 @@ make_definition_idx(BlockIdxMax, int64, int64_t);
 make_definition_idx(BlockIdxMax, float64, double);
 #undef make_definition_idx
 }
+
+// Reference Counting
+// nrt.h port, required for nrt.cpp
+typedef void (*NRT_dtor_function)(void* ptr, size_t size, void* info);
+typedef void (*NRT_dealloc_func)(void* ptr, void* dealloc_info);
+
+typedef void* (*NRT_malloc_func)(size_t size);
+typedef void* (*NRT_realloc_func)(void* ptr, size_t new_size);
+typedef void (*NRT_free_func)(void* ptr);
+
+// nrt.cpp port
+extern "C" {
+struct CUDAMemInfo {
+  cuda::atomic<size_t> refct;
+  NRT_dtor_function dtor;
+  void* data;
+  size_t size;
+};
+}
+
+typedef struct CUDAMemInfo CUDANRT_MemInfo;
+
+// vendored directly from nrt.cpp
+struct CUDANRT_MemSys {
+  /* Shutdown flag */
+  int shutting;
+  /* Stats */
+  struct {
+    bool enabled;
+    cuda::atomic<size_t> alloc;
+    cuda::atomic<size_t> free;
+    cuda::atomic<size_t> mi_alloc;
+    cuda::atomic<size_t> mi_free;
+  } stats;
+  /* System allocation functions */
+  struct {
+    NRT_malloc_func malloc;
+    NRT_realloc_func realloc;
+    NRT_free_func free;
+  } allocator;
+};
+
+/* The Memory System object */
+__device__ static CUDANRT_MemSys TheMSys;
+
+static void nrt_fatal_error(const char* msg)
+{
+  fprintf(stderr, "Fatal Numba error: %s\n", msg);
+  fflush(stderr); /* it helps in Windows debug build */
+}
+
+extern "C" __device__ void CUDANRT_MemSys_init(void)
+{
+  TheMSys.shutting = 0;
+  // Stats are off by default, call NRT_MemSys_enable_stats to enable
+  TheMSys.stats.enabled  = false;
+  TheMSys.stats.alloc    = 0;
+  TheMSys.stats.free     = 0;
+  TheMSys.stats.mi_alloc = 0;
+  TheMSys.stats.mi_free  = 0;
+  /* Bind to CUDA allocator */
+  TheMSys.allocator.malloc = malloc;
+  //  TheMSys.allocator.realloc = realloc;
+  TheMSys.allocator.free = free;
+}
+
+extern "C" void CUDANRT_MemSys_shutdown(void) { TheMSys.shutting = 1; }
+
+extern "C" void CUDANRT_MemSys_enable_stats(void) { TheMSys.stats.enabled = true; }
+
+extern "C" void CUDANRT_MemSys_disable_stats(void) { TheMSys.stats.enabled = false; }
+
+extern "C" size_t CUDANRT_MemSys_stats_enabled(void) { return (size_t)TheMSys.stats.enabled; }
+
+extern "C" void NRT_MemSys_set_allocator(NRT_malloc_func malloc_func,
+                                         NRT_realloc_func realloc_func,
+                                         NRT_free_func free_func)
+{
+  bool stats_cond = false;
+  if ((malloc_func != TheMSys.allocator.malloc ||
+       // realloc_func != TheMSys.allocator.realloc ||
+       free_func != TheMSys.allocator.free) &&
+      stats_cond) {
+    nrt_fatal_error("cannot change allocator while blocks are allocated");
+  }
+  TheMSys.allocator.malloc = malloc_func;
+  // TheMSys.allocator.realloc = realloc_func;
+  TheMSys.allocator.free = free_func;
+}
+
+/* This value is used as a marker for "stats are disabled", it's ASCII "AAAA" */
+static size_t _DISABLED_STATS_VALUE = 0x41414141;
+
+extern "C" size_t NRT_MemSys_get_stats_alloc()
+{
+  if (TheMSys.stats.enabled) {
+    return TheMSys.stats.alloc.load();
+  } else {
+    return _DISABLED_STATS_VALUE;
+  }
+}
+
+extern "C" size_t NRT_MemSys_get_stats_free()
+{
+  if (TheMSys.stats.enabled) {
+    return TheMSys.stats.free.load();
+  } else {
+    return _DISABLED_STATS_VALUE;
+  }
+}
+
+extern "C" size_t NRT_MemSys_get_stats_mi_alloc()
+{
+  if (TheMSys.stats.enabled) {
+    return TheMSys.stats.mi_alloc.load();
+  } else {
+    return _DISABLED_STATS_VALUE;
+  }
+}
+
+extern "C" size_t NRT_MemSys_get_stats_mi_free()
+{
+  if (TheMSys.stats.enabled) {
+    return TheMSys.stats.mi_free.load();
+  } else {
+    return _DISABLED_STATS_VALUE;
+  }
+}
+
+/*
+ * The MemInfo structure.
+ */
+
+extern "C" __device__ void CUDANRT_MemInfo_init(CUDAMemInfo* mi,
+                                                void* data,
+                                                size_t size,
+                                                NRT_dtor_function dtor)
+{
+  mi->refct = 1; /* starts with 1 refct */
+  mi->dtor  = dtor;
+  mi->data  = data;
+  mi->size  = size;
+  /* Update stats */
+  if (TheMSys.stats.enabled) { TheMSys.stats.mi_alloc++; }
+}
+
+extern "C" __device__ void* CUDANRT_Allocate_External(size_t size)
+{
+  void* ptr = NULL;
+  ptr       = TheMSys.allocator.malloc(size);
+  if (TheMSys.stats.enabled) { TheMSys.stats.alloc++; }
+  return ptr;
+}
+
+extern "C" __device__ void* CUDANRT_Allocate(size_t size)
+{
+  return CUDANRT_Allocate_External(size);
+}
+
+__device__ CUDANRT_MemInfo* CUDANRT_MemInfo_new(void* data,
+                                                size_t size,
+                                                NRT_dtor_function dtor,
+                                                void* dtor_info)
+{
+  CUDANRT_MemInfo* mi = (CUDANRT_MemInfo*)CUDANRT_Allocate(sizeof(CUDANRT_MemInfo));
+  if (mi != NULL) { CUDANRT_MemInfo_init(mi, data, size, dtor); }
+  return mi;
+}
+
+__device__ size_t CUDANRT_MemInfo_refcount(CUDANRT_MemInfo* mi)
+{
+  /* Should never returns 0 for a valid MemInfo */
+  if (mi && mi->data)
+    return mi->refct;
+  else {
+    return (size_t)-1;
+  }
+}
+
+__device__ static void* nrt_allocate_meminfo_and_data(size_t size, CUDANRT_MemInfo** mi_out)
+{
+  CUDANRT_MemInfo* mi = NULL;
+  char* base          = (char*)CUDANRT_Allocate_External(sizeof(CUDANRT_MemInfo) + size);
+  if (base == NULL) {
+    *mi_out = NULL; /* set meminfo to NULL as allocation failed */
+    return NULL;    /* return early as allocation failed */
+  }
+  mi      = (CUDANRT_MemInfo*)base;
+  *mi_out = mi;
+  return (void*)((char*)base + sizeof(CUDANRT_MemInfo));
+}
+
+__device__ CUDANRT_MemInfo* CUDANRT_MemInfo_alloc(size_t size)
+{
+  CUDANRT_MemInfo* mi = NULL;
+  void* data          = nrt_allocate_meminfo_and_data(size, &mi);
+  if (data == NULL) { return NULL; /* return early as allocation failed */ }
+  CUDANRT_MemInfo_init(mi, data, size, NULL);
+  return mi;
+}
+
+__device__ static void nrt_internal_custom_dtor(void* ptr, size_t size, void* info)
+{
+  NRT_dtor_function dtor = (NRT_dtor_function)info;
+  if (dtor) { dtor(ptr, size, NULL); }
+}
+
+__device__ CUDANRT_MemInfo* CUDANRT_MemInfo_alloc_dtor(size_t size, NRT_dtor_function dtor)
+{
+  CUDANRT_MemInfo* mi = NULL;
+  void* data          = (void*)nrt_allocate_meminfo_and_data(size, &mi);
+  if (data == NULL) { return NULL; /* return early as allocation failed */ }
+  CUDANRT_MemInfo_init(mi, data, size, nrt_internal_custom_dtor);
+  return mi;
+}
+
+__device__ static void* nrt_allocate_meminfo_and_data_align(size_t size,
+                                                            unsigned align,
+                                                            CUDANRT_MemInfo** mi)
+{
+  size_t offset = 0, intptr = 0, remainder = 0;
+  char* base = (char*)nrt_allocate_meminfo_and_data(size + 2 * align, mi);
+  if (base == NULL) { return NULL; /* return early as allocation failed */ }
+  intptr = (size_t)base;
+  /*
+   * See if the allocation is aligned already...
+   * Check if align is a power of 2, if so the modulo can be avoided.
+   */
+  if ((align & (align - 1)) == 0) {
+    remainder = intptr & (align - 1);
+  } else {
+    remainder = intptr % align;
+  }
+  if (remainder == 0) { /* Yes */
+    offset = 0;
+  } else { /* No, move forward `offset` bytes */
+    offset = align - remainder;
+  }
+  return (void*)((char*)base + offset);
+}
+
+extern "C" __device__ CUDANRT_MemInfo* NRT_MemInfo_alloc_aligned(size_t size, unsigned align)
+{
+  CUDANRT_MemInfo* mi = NULL;
+  void* data          = nrt_allocate_meminfo_and_data_align(size, align, &mi);
+  if (data == NULL) { return NULL; /* return early as allocation failed */ }
+  CUDANRT_MemInfo_init(mi, data, size, NULL);
+  return mi;
+}
+
+extern "C" __device__ void NRT_Free(void* ptr) { TheMSys.allocator.free(ptr); }
+
+extern "C" __device__ void CUDANRT_dealloc(CUDANRT_MemInfo* mi) { NRT_Free(mi); }
+
+typedef void NRT_managed_dtor(void* data);
+
+__device__ static void nrt_manage_memory_dtor(void* data, size_t size, void* info)
+{
+  NRT_managed_dtor* dtor = (NRT_managed_dtor*)info;
+  dtor(data);
+}
+
+__device__ static CUDANRT_MemInfo* nrt_manage_memory(void* data, NRT_managed_dtor dtor)
+{
+  return (CUDANRT_MemInfo*)(CUDANRT_MemInfo_new(data, 0, nrt_manage_memory_dtor, (void*)dtor));
+}
+
+typedef struct {
+  /* Methods to create MemInfos.
+  MemInfos are like smart pointers for objects that are managed by the Numba.
+  */
+
+  /* Allocate memory
+  *nbytes* is the number of bytes to be allocated
+  Returning a new reference.
+  */
+  CUDANRT_MemInfo* (*allocate)(size_t nbytes);
+
+  /* Convert externally allocated memory into a MemInfo.
+   *data* is the memory pointer
+   *dtor* is the deallocator of the memory
+   */
+  CUDANRT_MemInfo* (*manage_memory)(void* data, NRT_managed_dtor dtor);
+
+  /* Acquire a reference */
+  void (*acquire)(CUDANRT_MemInfo* mi);
+
+  /* Release a reference */
+  void (*release)(CUDANRT_MemInfo* mi);
+
+  /* Get MemInfo data pointer */
+  void* (*get_data)(CUDANRT_MemInfo* mi);
+
+} NRT_api_functions;
+
+extern "C" __device__ void NRT_MemInfo_destroy(CUDANRT_MemInfo* mi) { CUDANRT_dealloc(mi); }
+
+extern "C" __device__ void NRT_MemInfo_call_dtor(CUDANRT_MemInfo* mi)
+{
+  if (mi->dtor && !TheMSys.shutting) /* We have a destructor and the system is not shutting down */
+    mi->dtor(mi->data, mi->size, NULL);
+  /* Clear and release MemInfo */
+  NRT_MemInfo_destroy(mi);
+}
+
+extern "C" __device__ void NRT_MemInfo_acquire(CUDANRT_MemInfo* mi)
+{
+  assert(mi->refct > 0 && "RefCt cannot be zero");
+  mi->refct++;
+}
+
+extern "C" __device__ void NRT_MemInfo_release(CUDANRT_MemInfo* mi)
+{
+  assert(mi->refct > 0 && "RefCt cannot be 0");
+  /* RefCt drop to zero */
+  if ((--(mi->refct)) == 0) { NRT_MemInfo_call_dtor(mi); }
+}
+
+extern "C" __device__ void* NRT_MemInfo_data(CUDANRT_MemInfo* mi) { return mi->data; }
+
+static const NRT_api_functions nrt_functions_table = {CUDANRT_MemInfo_alloc,
+                                                      nrt_manage_memory,
+                                                      NRT_MemInfo_acquire,
+                                                      NRT_MemInfo_release,
+                                                      NRT_MemInfo_data};
+
+extern "C" const NRT_api_functions* CUDANRT_get_api(void) { return &nrt_functions_table; }
