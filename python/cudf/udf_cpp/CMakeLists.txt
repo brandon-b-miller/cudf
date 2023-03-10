@@ -80,7 +80,7 @@ file(COPY_FILE \${ptx_path} \"${destination}/${new_name}\")"
 endfunction()
 
 # Create the shim library for each architecture.
-set(SHIM_CUDA_FLAGS --expt-relaxed-constexpr -rdc=true)
+set(SHIM_CUDA_FLAGS --expt-relaxed-constexpr -rdc=true -g -G)
 
 # always build a default PTX file in case RAPIDS_NO_INITIALIZE is set and the device cc can't be
 # safely queried through a context

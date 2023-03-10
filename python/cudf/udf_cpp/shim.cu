@@ -652,8 +652,19 @@ make_definition_idx(BlockIdxMax, float64, double);
 #undef make_definition_idx
 }
 
-// Reference Counting
+// nrt.cpp port
 // nrt.h port, required for nrt.cpp
+#if 1
+#define NRT_Debug(X) \
+  {                  \
+    X;               \
+    fflush(stdout);  \
+  }
+#else
+#define NRT_Debug(X) \
+  if (0) { X; }
+#endif
+
 typedef void (*NRT_dtor_function)(void* ptr, size_t size, void* info);
 typedef void (*NRT_dealloc_func)(void* ptr, void* dealloc_info);
 
@@ -661,15 +672,39 @@ typedef void* (*NRT_malloc_func)(size_t size);
 typedef void* (*NRT_realloc_func)(void* ptr, size_t new_size);
 typedef void (*NRT_free_func)(void* ptr);
 
-// nrt.cpp port
+typedef void* (*NRT_external_malloc_func)(size_t size, void* opaque_data);
+typedef void* (*NRT_external_realloc_func)(void* ptr, size_t new_size, void* opaque_data);
+typedef void (*NRT_external_free_func)(void* ptr, void* opaque_data);
 
-// MemInfo object
+/*
+ * Debugging printf function used internally
+ */
+__device__ void nrt_debug_print(const char* fmt, ...)
+{
+  // va_list args;
+
+  // va_start(args, fmt);
+  // vfprintf(stderr, fmt, args);
+  // va_end(args);
+}
+
+struct ExternalMemAllocator {
+  NRT_external_malloc_func malloc;
+  NRT_external_realloc_func realloc;
+  NRT_external_free_func free;
+  void* opaque_data;
+};
+
+typedef struct ExternalMemAllocator NRT_ExternalAllocator;
+
 extern "C" {
 struct MemInfo {
   cuda::atomic<size_t> refct;
   NRT_dtor_function dtor;
+  void* dtor_info;
   void* data;
   size_t size;
+  NRT_ExternalAllocator* external_allocator;
 };
 }
 
@@ -679,6 +714,13 @@ typedef struct MemInfo NRT_MemInfo;
 struct NRT_MemSys {
   /* Shutdown flag */
   int shutting;
+  struct {
+    bool enabled;
+    std::atomic_size_t alloc;
+    std::atomic_size_t free;
+    std::atomic_size_t mi_alloc;
+    std::atomic_size_t mi_free;
+  } stats;
   /* System allocation functions */
   struct {
     NRT_malloc_func malloc;
@@ -688,203 +730,65 @@ struct NRT_MemSys {
 };
 
 /* The Memory System object */
-__device__ static NRT_MemSys TheMSys;
+__device__ NRT_MemSys TheMSys;
 
-static void nrt_fatal_error(const char* msg)
-{
-  fprintf(stderr, "Fatal Numba error: %s\n", msg);
-  fflush(stderr); /* it helps in Windows debug build */
-}
-
-// initialize the single global object
-extern "C" __device__ void NRT_MemSys_init(void)
-{
-  TheMSys.shutting = 0;
-  /* Bind to  allocator */
-  TheMSys.allocator.malloc = malloc;
-  //  TheMSys.allocator.realloc = realloc;
-  TheMSys.allocator.free = free;
-}
-
-// shut down the single global object
-extern "C" void NRT_MemSys_shutdown(void) { TheMSys.shutting = 1; }
-
-// set the single global object's allocator
-extern "C" void NRT_MemSys_set_allocator(NRT_malloc_func malloc_func,
-                                         NRT_realloc_func realloc_func,
-                                         NRT_free_func free_func)
-{
-  bool stats_cond = false;
-  if ((malloc_func != TheMSys.allocator.malloc ||
-       // realloc_func != TheMSys.allocator.realloc ||
-       free_func != TheMSys.allocator.free) &&
-      stats_cond) {
-    nrt_fatal_error("cannot change allocator while blocks are allocated");
-  }
-  TheMSys.allocator.malloc = malloc_func;
-  // TheMSys.allocator.realloc = realloc_func;
-  TheMSys.allocator.free = free_func;
-}
-
-// default initialize a MemInfo
-extern "C" __device__ void NRT_MemInfo_init(MemInfo* mi,
-                                            void* data,
-                                            size_t size,
-                                            NRT_dtor_function dtor)
-{
-  mi->refct = 1; /* starts with 1 refct */
-  mi->dtor  = dtor;
-  mi->data  = data;
-  mi->size  = size;
-}
+// for creating a new MemInfo object from an existing pointer
+// create a new MemInfo structure
 
 // allocate from the heap using whatever the global allocator is set to
-extern "C" __device__ void* NRT_Allocate(size_t size)
+
+extern "C" __device__ void* NRT_Allocate_External(size_t size, NRT_ExternalAllocator* allocator)
 {
   void* ptr = NULL;
-  ptr       = TheMSys.allocator.malloc(size);
+  if (allocator) {
+    ptr = allocator->malloc(size, allocator->opaque_data);
+    // NRT_Debug(nrt_debug_print("NRT_Allocate_External custom bytes=%zu ptr=%p\n", size, ptr));
+  } else {
+    ptr = malloc(size);
+    // NRT_Debug(nrt_debug_print("NRT_Allocate_External bytes=%zu ptr=%p\n", size, ptr));
+  }
   return ptr;
 }
 
-// create a new MemInfo structure
+extern "C" __device__ void* NRT_Allocate(size_t size) { return NRT_Allocate_External(size, NULL); }
+
+extern "C" __device__ void NRT_MemInfo_init(NRT_MemInfo* mi,
+                                            void* data,
+                                            size_t size,
+                                            NRT_dtor_function dtor,
+                                            void* dtor_info,
+                                            NRT_ExternalAllocator* external_allocator)
+{
+  mi->refct              = 1; /* starts with 1 refct */
+  mi->dtor               = dtor;
+  mi->dtor_info          = dtor_info;
+  mi->data               = data;
+  mi->size               = size;
+  mi->external_allocator = external_allocator;
+  // NRT_Debug(nrt_debug_print("NRT_MemInfo_init mi=%p external_allocator=%p\n", mi,
+  // external_allocator));
+  /* Update stats */
+}
+
+// basic dtor
+__device__ static void basic_free(void* ptr, size_t size, void* info) { free(ptr); }
+
 __device__ NRT_MemInfo* NRT_MemInfo_new(void* data,
                                         size_t size,
                                         NRT_dtor_function dtor,
                                         void* dtor_info)
 {
   NRT_MemInfo* mi = (NRT_MemInfo*)NRT_Allocate(sizeof(NRT_MemInfo));
-  if (mi != NULL) { NRT_MemInfo_init(mi, data, size, dtor); }
+  if (mi != NULL) {
+    // NRT_Debug(nrt_debug_print("NRT_MemInfo_new mi=%p\n", mi));
+    NRT_MemInfo_init(mi, data, size, basic_free, dtor_info, NULL);
+  }
   return mi;
 }
 
-// get the refcount of a MemInfo
-__device__ size_t NRT_MemInfo_refcount(NRT_MemInfo* mi)
-{
-  /* Should never returns 0 for a valid MemInfo */
-  if (mi && mi->data)
-    return mi->refct;
-  else {
-    return (size_t)-1;
-  }
-}
-
-// allocate a MemInfo and its data in one step
-__device__ static void* nrt_allocate_meminfo_and_data(size_t size, NRT_MemInfo** mi_out)
-{
-  NRT_MemInfo* mi = NULL;
-  char* base      = (char*)NRT_Allocate(sizeof(NRT_MemInfo) + size);
-  if (base == NULL) {
-    *mi_out = NULL; /* set meminfo to NULL as allocation failed */
-    return NULL;    /* return early as allocation failed */
-  }
-  mi      = (NRT_MemInfo*)base;
-  *mi_out = mi;
-  return (void*)((char*)base + sizeof(NRT_MemInfo));
-}
-
-// allocate a MemInfo and its data, plus initialize that MemInfo
-__device__ NRT_MemInfo* NRT_MemInfo_alloc(size_t size)
-{
-  NRT_MemInfo* mi = NULL;
-  void* data      = nrt_allocate_meminfo_and_data(size, &mi);
-  if (data == NULL) { return NULL; /* return early as allocation failed */ }
-  NRT_MemInfo_init(mi, data, size, NULL);
-  return mi;
-}
-
-__device__ static void nrt_internal_custom_dtor(void* ptr, size_t size, void* info)
-{
-  NRT_dtor_function dtor = (NRT_dtor_function)info;
-  if (dtor) { dtor(ptr, size, NULL); }
-}
-
-__device__ NRT_MemInfo* NRT_MemInfo_alloc_dtor(size_t size, NRT_dtor_function dtor)
-{
-  NRT_MemInfo* mi = NULL;
-  void* data      = (void*)nrt_allocate_meminfo_and_data(size, &mi);
-  if (data == NULL) { return NULL; /* return early as allocation failed */ }
-  NRT_MemInfo_init(mi, data, size, nrt_internal_custom_dtor);
-  return mi;
-}
-
-__device__ static void* nrt_allocate_meminfo_and_data_align(size_t size,
-                                                            unsigned align,
-                                                            NRT_MemInfo** mi)
-{
-  size_t offset = 0, intptr = 0, remainder = 0;
-  char* base = (char*)nrt_allocate_meminfo_and_data(size + 2 * align, mi);
-  if (base == NULL) { return NULL; /* return early as allocation failed */ }
-  intptr = (size_t)base;
-  /*
-   * See if the allocation is aligned already...
-   * Check if align is a power of 2, if so the modulo can be avoided.
-   */
-  if ((align & (align - 1)) == 0) {
-    remainder = intptr & (align - 1);
-  } else {
-    remainder = intptr % align;
-  }
-  if (remainder == 0) { /* Yes */
-    offset = 0;
-  } else { /* No, move forward `offset` bytes */
-    offset = align - remainder;
-  }
-  return (void*)((char*)base + offset);
-}
-
-extern "C" __device__ NRT_MemInfo* NRT_MemInfo_alloc_aligned(size_t size, unsigned align)
-{
-  NRT_MemInfo* mi = NULL;
-  void* data      = nrt_allocate_meminfo_and_data_align(size, align, &mi);
-  if (data == NULL) { return NULL; /* return early as allocation failed */ }
-  NRT_MemInfo_init(mi, data, size, NULL);
-  return mi;
-}
-
-extern "C" __device__ void NRT_Free(void* ptr) { TheMSys.allocator.free(ptr); }
+extern "C" __device__ void NRT_Free(void* ptr) { free(ptr); }
 
 extern "C" __device__ void NRT_dealloc(NRT_MemInfo* mi) { NRT_Free(mi); }
-
-typedef void NRT_managed_dtor(void* data);
-
-__device__ static void nrt_manage_memory_dtor(void* data, size_t size, void* info)
-{
-  NRT_managed_dtor* dtor = (NRT_managed_dtor*)info;
-  dtor(data);
-}
-
-__device__ static NRT_MemInfo* nrt_manage_memory(void* data, NRT_managed_dtor dtor)
-{
-  return (NRT_MemInfo*)(NRT_MemInfo_new(data, 0, nrt_manage_memory_dtor, (void*)dtor));
-}
-
-typedef struct {
-  /* Methods to create MemInfos.
-  MemInfos are like smart pointers for objects that are managed by the Numba.
-  */
-
-  /* Allocate memory
-  *nbytes* is the number of bytes to be allocated
-  Returning a new reference.
-  */
-  NRT_MemInfo* (*allocate)(size_t nbytes);
-
-  /* Convert externally allocated memory into a MemInfo.
-   *data* is the memory pointer
-   *dtor* is the deallocator of the memory
-   */
-  NRT_MemInfo* (*manage_memory)(void* data, NRT_managed_dtor dtor);
-
-  /* Acquire a reference */
-  void (*acquire)(NRT_MemInfo* mi);
-
-  /* Release a reference */
-  void (*release)(NRT_MemInfo* mi);
-
-  /* Get MemInfo data pointer */
-  void* (*get_data)(NRT_MemInfo* mi);
-
-} NRT_api_functions;
 
 extern "C" __device__ void NRT_MemInfo_destroy(NRT_MemInfo* mi) { NRT_dealloc(mi); }
 
@@ -909,9 +813,55 @@ extern "C" __device__ void NRT_MemInfo_release(NRT_MemInfo* mi)
   if ((--(mi->refct)) == 0) { NRT_MemInfo_call_dtor(mi); }
 }
 
-extern "C" __device__ void* NRT_MemInfo_data(NRT_MemInfo* mi) { return mi->data; }
+__device__ void* nrt_allocate_meminfo_and_data(size_t size,
+                                               NRT_MemInfo** mi_out,
+                                               NRT_ExternalAllocator* allocator)
+{
+  NRT_MemInfo* mi = NULL;
+  //(nrt_debug_print("nrt_allocate_meminfo_and_data %p\n", allocator));
+  char* base = (char*)NRT_Allocate_External(sizeof(NRT_MemInfo) + size, allocator);
+  if (base == NULL) {
+    *mi_out = NULL; /* set meminfo to NULL as allocation failed */
+    return NULL;    /* return early as allocation failed */
+  }
+  mi      = (NRT_MemInfo*)base;
+  *mi_out = mi;
+  return (void*)((char*)base + sizeof(NRT_MemInfo));
+}
 
-static const NRT_api_functions nrt_functions_table = {
-  NRT_MemInfo_alloc, nrt_manage_memory, NRT_MemInfo_acquire, NRT_MemInfo_release, NRT_MemInfo_data};
+__device__ void* nrt_allocate_meminfo_and_data_align(size_t size,
+                                                     unsigned align,
+                                                     NRT_MemInfo** mi,
+                                                     NRT_ExternalAllocator* allocator)
+{
+  size_t offset = 0, intptr = 0, remainder = 0;
+  // NRT_Debug(nrt_debug_print("nrt_allocate_meminfo_and_data_align %p\n", allocator));
+  char* base = (char*)nrt_allocate_meminfo_and_data(size + 2 * align, mi, allocator);
+  if (base == NULL) { return NULL; /* return early as allocation failed */ }
+  intptr = (size_t)base;
+  /*
+   * See if the allocation is aligned already...
+   * Check if align is a power of 2, if so the modulo can be avoided.
+   */
+  if ((align & (align - 1)) == 0) {
+    remainder = intptr & (align - 1);
+  } else {
+    remainder = intptr % align;
+  }
+  if (remainder == 0) { /* Yes */
+    offset = 0;
+  } else { /* No, move forward `offset` bytes */
+    offset = align - remainder;
+  }
+  return (void*)((char*)base + offset);
+}
 
-extern "C" const NRT_api_functions* NRT_get_api(void) { return &nrt_functions_table; }
+extern "C" __device__ NRT_MemInfo* NRT_MemInfo_alloc_aligned(size_t size, unsigned align)
+{
+  NRT_MemInfo* mi = NULL;
+  void* data      = nrt_allocate_meminfo_and_data_align(size, align, &mi, NULL);
+  if (data == NULL) { return NULL; /* return early as allocation failed */ }
+  // NRT_Debug(nrt_debug_print("NRT_MemInfo_alloc_aligned %p\n", data));
+  NRT_MemInfo_init(mi, data, size, NULL, NULL, NULL);
+  return mi;
+}
