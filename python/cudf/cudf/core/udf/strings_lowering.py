@@ -290,6 +290,28 @@ def create_binary_string_func(binary_func, retty):
                 result = cgutils.create_struct_proxy(udf_string)(
                     context, builder, value=builder.load(udf_str_ptr)
                 )
+
+                from cudf.core.udf._nrt_cuda import _CUDA_NRT_MemInfo_new
+
+                def _call_CUDA_NRT_MemInfo_new(data, size):
+                    return _CUDA_NRT_MemInfo_new(data, size)
+
+                breakpoint()
+                meminfo = context.compile_internal(
+                    builder,
+                    _call_CUDA_NRT_MemInfo_new,
+                    types.MemInfoPointer(types.uint8)(
+                        types.CPointer(types.char), types.size_t
+                    ),
+                    (
+                        result.m_data,
+                        context.cast(
+                            builder, result.m_size, types.int32, types.uint64
+                        ),
+                    ),
+                )
+
+                result.meminfo = meminfo
                 return result._getvalue()
 
         return binary_func_impl
