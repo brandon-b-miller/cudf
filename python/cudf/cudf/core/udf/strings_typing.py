@@ -4,10 +4,12 @@ import operator
 
 import numpy as np
 from numba import types
+from numba.core import cgutils
 from numba.core.extending import models, register_model
 from numba.core.typing import signature as nb_signature
 from numba.core.typing.templates import AbstractTemplate, AttributeTemplate
 from numba.cuda.cudadecl import registry as cuda_decl_registry
+from numba.cuda.descriptor import cuda_target
 
 import rmm
 
@@ -71,10 +73,21 @@ class udf_string_model(models.StructModel):
         ("m_data", types.CPointer(types.char)),
         ("m_bytes", size_type),
         ("m_size", size_type),
+        #        ("meminfo", types.MemInfoPointer(types.void))
     )
 
     def __init__(self, dmm, fe_type):
         super().__init__(dmm, fe_type, self._members)
+
+    def has_nrt_meminfo(self):
+        return True
+
+    def get_nrt_meminfo(self, builder, value):
+        breakpoint()
+        proxy = cgutils.create_struct_proxy(UDFString())(
+            cuda_target.target_context, builder, value=value
+        )
+        return proxy.meminfo
 
 
 any_string_ty = (StringView, UDFString, types.StringLiteral)
