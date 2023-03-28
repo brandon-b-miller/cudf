@@ -355,7 +355,7 @@ def _get_extensionty_size(ty):
     """
     Return the size of an extension type in bytes
     """
-    data_layout = nvvm.data_layout
+    data_layout = nvvm.NVVM().data_layout
     if isinstance(data_layout, dict):
         data_layout = data_layout[64]
     target_data = ll.create_target_data(data_layout)
