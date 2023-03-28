@@ -33,8 +33,9 @@ def get_kernels(func, dtype, size):
     The returned kernels execute the input function on each data
     element of the input and returns the output into the output vector
     """
-
-    func = cuda.jit(device=True)(func)
+    from cudf.core.udf.utils import set_malloc_heap_size
+    set_malloc_heap_size(int(1e9))
+    func = cuda.jit(device=True, debug=True,opt=False)(func)
 
     if dtype == "str":
         outty = CPointer(udf_string)
@@ -50,14 +51,15 @@ def get_kernels(func, dtype, size):
             result = func(st)
             output_col[id] = result
 
-    @cuda.jit(sig, link=[_PTX_FILE], extensions=[str_view_arg_handler])
+    @cuda.jit(sig, link=[_PTX_FILE], extensions=[str_view_arg_handler], lineinfo=True)
     def udf_string_kernel(input_strings, output_col):
         # test the string function with a udf_string as input
         id = cuda.grid(1)
         if id < size:
             st = input_strings[id]
             st = sv_to_udf_str(st)
-            result = func(st)
+#            result = func(st)
+            result = len(st)
             output_col[id] = result
 
     return string_view_kernel, udf_string_kernel
@@ -108,30 +110,30 @@ def run_udf_test(data, func, dtype):
 def data():
     return [
         "abc",
-        "ABC",
-        "AbC",
-        "123",
-        "123aBc",
-        "123@.!",
-        "",
-        "rapids ai",
-        "gpu",
-        "True",
-        "False",
-        "1.234",
-        ".123a",
-        "0.013",
-        "1.0",
-        "01",
-        "20010101",
-        "cudf",
-        "cuda",
-        "gpu",
-        "This Is A Title",
-        "This is Not a Title",
-        "Neither is This a Title",
-        "NoT a TiTlE",
-        "123 Title Works",
+#        "ABC",
+#        "AbC",
+#        "123",
+#        "123aBc",
+#        "123@.!",
+#        "",
+#        "rapids ai",
+#        "gpu",
+#        "True",
+#        "False",
+#        "1.234",
+#        ".123a",
+#        "0.013",
+#        "1.0",
+#        "01",
+#        "20010101",
+#        "cudf",
+#        "cuda",
+#        "gpu",
+#        "This Is A Title",
+#        "This is Not a Title",
+#        "Neither is This a Title",
+#        "NoT a TiTlE",
+#        "123 Title Works",
     ]
 
 

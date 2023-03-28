@@ -2,6 +2,7 @@
 
 import operator
 from functools import partial
+from llvmlite import ir
 
 from numba import cuda, types
 from numba.core import cgutils
@@ -20,6 +21,7 @@ from cudf._lib.strings_udf import (
 )
 from cudf.core.udf.masked_typing import MaskedType
 from cudf.core.udf.strings_typing import size_type, string_view, udf_string
+
 
 _STR_VIEW_PTR = types.CPointer(string_view)
 _UDF_STRING_PTR = types.CPointer(udf_string)
@@ -127,9 +129,10 @@ def cast_string_literal_to_string_view(context, builder, fromty, toty, val):
 
     # set the empty strview data pointer to point to the literal value
     s = context.insert_const_string(builder.module, fromty.literal_value)
-    sv.data = context.insert_addrspace_conv(
-        builder, s, nvvm.ADDRSPACE_CONSTANT
-    )
+
+    charptrty = ir.PointerType(ir.IntType(8))
+    sv.data = builder.addrspacecast(s, charptrty, 'generic')
+
     sv.length = context.get_constant(size_type, len(fromty.literal_value))
     sv.bytes = context.get_constant(
         size_type, len(fromty.literal_value.encode("UTF-8"))
@@ -141,7 +144,7 @@ def cast_string_literal_to_string_view(context, builder, fromty, toty, val):
 @cuda_lowering_registry.lower_cast(string_view, udf_string)
 def cast_string_view_to_udf_string(context, builder, fromty, toty, val):
     sv_ptr = builder.alloca(default_manager[fromty].get_value_type())
-    udf_str_ptr = builder.alloca(default_manager[toty].get_value_type())
+    udf_str_ptr = _new_udf_string(context, builder)#builder.alloca(default_manager[toty].get_value_type())
     builder.store(val, sv_ptr)
     _ = context.compile_internal(
         builder,
@@ -270,6 +273,71 @@ def replace_impl(context, builder, sig, args):
     )
     return result._getvalue()
 
+### debugging
+def validate_mi(context, builder, ptr):
+    _validate_mi = cuda.declare_device("validate_meminfo", size_type(types.voidptr))
+    def cuda_validate_func(ptr):
+        return _validate_mi(ptr)
+
+
+    context.compile_internal(
+        builder,
+        cuda_validate_func,
+        size_type(types.voidptr),
+        (ptr,)
+    )
+
+def validate_udf_string_mi(context, builder, udf_str_ptr):
+    char_ptr_ty = ir.PointerType(ir.IntType(8))
+    udf_str = cgutils.create_struct_proxy(udf_string)(context, builder, value=builder.load(udf_str_ptr))
+    udf_str_addr = builder.ptrtoint(udf_str.m_data, ir.IntType(64))
+    # meminfo is hidden 8 bytes behind the udf_str's first member
+    mi_ptr = builder.sub(builder.ptrtoint(udf_str_addr, ir.IntType(64)), ir.Constant(ir.IntType(64), 8))
+    res = builder.inttoptr(mi_ptr, char_ptr_ty)
+    validate_mi(context, builder, res)    
+
+
+
+def _new_udf_string(context, builder):
+    ir_intty = ir.IntType(32)
+
+    str_and_mi = ir.LiteralStructType(
+        [
+            ir.PointerType(ir.IntType(8)),
+            default_manager[udf_string].get_value_type(),
+        ]
+    )  
+    # {i8*, udf_string*}
+    #
+    #
+    udf_str_and_meminfo_ptr = builder.alloca(str_and_mi) # {i8*, udf_string}*
+    udf_str_ptr = builder.gep(
+        udf_str_and_meminfo_ptr, 
+        [ir_intty(0),ir_intty(1)]
+    ) # udf_string*
+
+    mi_ptr = builder.gep(udf_str_and_meminfo_ptr, [ir_intty(0), ir_intty(0)])
+    # i8**
+    context.compile_internal(
+        builder,
+        new_meminfo_from_udf_str,
+        size_type(types.CPointer(types.voidptr), _UDF_STRING_PTR),
+        (mi_ptr, udf_str_ptr)
+    )
+
+    validate_mi(context, builder, builder.load(mi_ptr))
+    #validate_udf_string_mi(context, builder, udf_str_ptr)
+    return udf_str_ptr
+
+
+_new_meminfo_from_udf_str = cuda.declare_device(
+    'meminfo_from_new_udf_str', 
+    size_type(types.CPointer(types.voidptr), _UDF_STRING_PTR)
+)
+
+def new_meminfo_from_udf_str(mi_ptr, udf_str):
+    return _new_meminfo_from_udf_str(mi_ptr, udf_str)
+
 
 def create_binary_string_func(binary_func, retty):
     """
@@ -308,23 +376,8 @@ def create_binary_string_func(binary_func, retty):
                 # this may change in the future if we need to return error
                 # codes, for instance).
 
-                breakpoint()
+                udf_str_ptr = _new_udf_string(context, builder)
 
-                # create a struct:
-                # ptr -> i8*
-                # str -> {i8*, i32, i32}
-                from llvmlite import ir
-
-                struct = ir.LiteralStructType(
-                    [
-                        ir.PointerType(ir.IntType(64)),
-                        default_manager[udf_string].get_value_type(),
-                    ]
-                )
-
-                udf_str_and_meminfo_ptr = builder.alloca(struct)
-
-                udf_str_ptr = ir.gep(udf_str_and_meminfo_ptr, 1)
                 _ = context.compile_internal(
                     builder,
                     cuda_func,

@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <stdio.h>
+
 #include <cudf/detail/utilities/device_operators.cuh>
 #include <cudf/strings/udf/case.cuh>
 #include <cudf/strings/udf/char_types.cuh>
@@ -31,6 +33,7 @@
 #include <type_traits>
 
 #include <_nrt_cuda.cuh>
+
 
 using namespace cudf::strings::udf;
 
@@ -663,4 +666,30 @@ make_definition_idx(BlockIdxMin, float64, double);
 make_definition_idx(BlockIdxMax, int64, int64_t);
 make_definition_idx(BlockIdxMax, float64, double);
 #undef make_definition_idx
+}
+
+__device__ void udf_str_dtor(void* udf_str, void* dtor_info) {
+  printf("\n\n\n deallocating! \n\n\n");
+  udf_string* ptr = static_cast<udf_string*>(udf_str);
+  delete ptr;
+}
+
+/*
+Create a MemInfo object around a udf_string object, these MemInfo objects will
+come initialized with an NRT_dtor_function which calls the real udf_string destructor
+*/
+extern "C" __device__ int meminfo_from_new_udf_str(int* nb_retval, void** mi_ptr, void* udf_str) {
+  printf("calling meminfo_from_new_udf_str. \n");
+  *mi_ptr = NRT_MemInfo_new(udf_str, sizeof(udf_string), (NRT_dtor_function)udf_str_dtor, NULL);
+  return 0;
+}
+
+extern "C" __device__ int validate_meminfo(int* nb_retval, void* ptr) {
+  auto mi_ptr   = reinterpret_cast<NRT_MemInfo*>(ptr);
+  printf("meminfo address (integer): ");
+  printf("%p", ptr);
+  printf("validate meminfo: refcount=");
+  printf("%d", mi_ptr->refct);
+  printf("\n");
+  return 0;
 }

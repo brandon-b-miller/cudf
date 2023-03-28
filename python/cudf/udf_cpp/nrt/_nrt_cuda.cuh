@@ -26,16 +26,16 @@
   if (0) { X; }
 #endif
 
-typedef void (*NRT_dtor_function)(void* ptr, size_t size, void* info);
-typedef void (*NRT_dealloc_func)(void* ptr, void* dealloc_info);
+typedef __device__ void (*NRT_dtor_function)(void* ptr, size_t size, void* info);
+typedef __device__ void (*NRT_dealloc_func)(void* ptr, void* dealloc_info);
 
-typedef void* (*NRT_malloc_func)(size_t size);
-typedef void* (*NRT_realloc_func)(void* ptr, size_t new_size);
-typedef void (*NRT_free_func)(void* ptr);
+typedef __device__ void* (*NRT_malloc_func)(size_t size);
+typedef __device__ void* (*NRT_realloc_func)(void* ptr, size_t new_size);
+typedef __device__ void (*NRT_free_func)(void* ptr);
 
-typedef void* (*NRT_external_malloc_func)(size_t size, void* opaque_data);
-typedef void* (*NRT_external_realloc_func)(void* ptr, size_t new_size, void* opaque_data);
-typedef void (*NRT_external_free_func)(void* ptr, void* opaque_data);
+typedef __device__ void* (*NRT_external_malloc_func)(size_t size, void* opaque_data);
+typedef __device__ void* (*NRT_external_realloc_func)(void* ptr, size_t new_size, void* opaque_data);
+typedef __device__ void (*NRT_external_free_func)(void* ptr, void* opaque_data);
 
 /*
  * Debugging printf function used internally
@@ -60,7 +60,7 @@ typedef struct ExternalMemAllocator NRT_ExternalAllocator;
 
 extern "C" {
 struct MemInfo {
-  cuda::atomic<size_t> refct;
+  cuda::atomic<size_t, cuda::thread_scope_device> refct;
   NRT_dtor_function dtor;
   void* dtor_info;
   void* data;
@@ -100,6 +100,7 @@ __device__ NRT_MemSys TheMSys;
 
 extern "C" __device__ void* NRT_Allocate_External(size_t size, NRT_ExternalAllocator* allocator)
 {
+  
   void* ptr = NULL;
   if (allocator) {
     ptr = allocator->malloc(size, allocator->opaque_data);
@@ -131,9 +132,6 @@ extern "C" __device__ void NRT_MemInfo_init(NRT_MemInfo* mi,
   /* Update stats */
 }
 
-// basic dtor
-__device__ static void basic_free(void* ptr, size_t size, void* info) { free(ptr); }
-
 __device__ NRT_MemInfo* NRT_MemInfo_new(void* data,
                                         size_t size,
                                         NRT_dtor_function dtor,
@@ -142,10 +140,11 @@ __device__ NRT_MemInfo* NRT_MemInfo_new(void* data,
   NRT_MemInfo* mi = (NRT_MemInfo*)NRT_Allocate(sizeof(NRT_MemInfo));
   if (mi != NULL) {
     // NRT_Debug(nrt_debug_print("NRT_MemInfo_new mi=%p\n", mi));
-    NRT_MemInfo_init(mi, data, size, basic_free, dtor_info, NULL);
+    NRT_MemInfo_init(mi, data, size, dtor, dtor_info, NULL);
   }
   return mi;
 }
+
 
 extern "C" __device__ void NRT_Free(void* ptr) { free(ptr); }
 
@@ -164,11 +163,13 @@ extern "C" __device__ void NRT_MemInfo_call_dtor(NRT_MemInfo* mi)
 extern "C" __device__ void NRT_MemInfo_acquire(NRT_MemInfo* mi)
 {
   assert(mi->refct > 0 && "RefCt cannot be zero");
+  printf("inside NRT_MemInfo_acquire");
   mi->refct++;
 }
 
 extern "C" __device__ void NRT_MemInfo_release(NRT_MemInfo* mi)
 {
+  printf("inside NRT_MemInfo_release");
   assert(mi->refct > 0 && "RefCt cannot be 0");
   /* RefCt drop to zero */
   if ((--(mi->refct)) == 0) { NRT_MemInfo_call_dtor(mi); }

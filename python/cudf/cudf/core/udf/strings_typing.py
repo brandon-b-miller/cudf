@@ -10,20 +10,19 @@ from numba.core.typing import signature as nb_signature
 from numba.core.typing.templates import AbstractTemplate, AttributeTemplate
 from numba.cuda.cudadecl import registry as cuda_decl_registry
 from numba.cuda.descriptor import cuda_target
-
+from numba.experimental import structref
 import rmm
-
+from llvmlite import ir
+from numba.core.datamodel import default_manager
+from numba import cuda
 # libcudf size_type
 size_type = types.int32
 
 
 # String object definitions
-class UDFString(types.Type):
+class UDFString(types.StructRef):
 
     np_dtype = np.dtype("object")
-
-    def __init__(self):
-        super().__init__(name="udf_string")
 
     @property
     def return_type(self):
@@ -60,9 +59,21 @@ class stringview_model(models.StructModel):
     def __init__(self, dmm, fe_type):
         super().__init__(dmm, fe_type, self._members)
 
+def validate_mi(context, builder, ptr):
+    _validate_mi = cuda.declare_device("validate_meminfo", size_type(types.voidptr))
+    def cuda_validate_func(ptr):
+        return _validate_mi(ptr)
+
+
+    context.compile_internal(
+        builder,
+        cuda_validate_func,
+        size_type(types.voidptr),
+        (ptr,)
+    )
 
 @register_model(UDFString)
-class udf_string_model(models.StructModel):
+class udf_string_model(models.StructRefModel):
     # from udf_string.hpp:
     # private:
     #   char* m_data{};
@@ -77,23 +88,42 @@ class udf_string_model(models.StructModel):
     )
 
     def __init__(self, dmm, fe_type):
-        super().__init__(dmm, fe_type, self._members)
+        super(models.StructRefModel, self).__init__(dmm, fe_type, members=self._members)
 
     def has_nrt_meminfo(self):
         return True
 
     def get_nrt_meminfo(self, builder, value):
-        breakpoint()
-        proxy = cgutils.create_struct_proxy(UDFString())(
-            cuda_target.target_context, builder, value=value
+        char_ptr_ty = ir.PointerType(ir.IntType(8))
+        # obtain the address of the first struct member
+        # the first element, m_data is an i8*, so this is an i8**
+        udf_str = cgutils.create_struct_proxy(udf_string)(
+            cuda_target.target_context, 
+            builder, 
+            value=value
         )
-        return proxy.meminfo
+        start = udf_str.m_data
+        udf_str_addr = builder.ptrtoint(start, ir.IntType(64))
 
+        # meminfo is hidden 8 bytes behind the udf_str's first member
+        mi_ptr = builder.sub(builder.ptrtoint(udf_str_addr, ir.IntType(64)), ir.Constant(ir.IntType(64), 8))
+        res = builder.inttoptr(mi_ptr, char_ptr_ty)
+        validate_mi(cuda_target.target_context, builder, res)
+        return res
+
+default_manager.register(UDFString, udf_string_model)
+structref.define_attributes(UDFString)
 
 any_string_ty = (StringView, UDFString, types.StringLiteral)
 string_view = StringView()
-udf_string = UDFString()
-
+udf_string = UDFString(
+    fields=[
+        ("m_data", types.CPointer(types.char)),
+        ("m_bytes", size_type),
+        ("m_size", size_type),
+    ]
+)
+#udf_string = UDFString()
 
 class StrViewArgHandler:
     """
