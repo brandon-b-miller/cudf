@@ -21,9 +21,12 @@ from cudf._lib.column cimport Column
 from cudf._lib.cpp.column.column cimport column, column_view
 from cudf._lib.cpp.strings_udf cimport (
     column_from_udf_string_array as cpp_column_from_udf_string_array,
+    column_from_managed_udf_string_array as cpp_column_from_managed_udf_string_array,
     free_udf_string_array as cpp_free_udf_string_array,
+    free_managed_udf_string_array as cpp_free_managed_udf_string_array,
     to_string_view_array as cpp_to_string_view_array,
     udf_string,
+    managed_udf_string,
 )
 
 
@@ -45,6 +48,19 @@ def column_from_udf_string_array(DeviceBuffer d_buffer):
     with nogil:
         c_result = move(cpp_column_from_udf_string_array(data, size))
         cpp_free_udf_string_array(data, size)
+
+    result = Column.from_unique_ptr(move(c_result))
+
+    return result
+
+def column_from_managed_udf_string_array(DeviceBuffer d_buffer):
+    cdef size_t size = int(d_buffer.c_size() / sizeof(managed_udf_string))
+    cdef managed_udf_string* data = <managed_udf_string*>d_buffer.c_data()
+    cdef unique_ptr[column] c_result
+
+    with nogil:
+        c_result = move(cpp_column_from_managed_udf_string_array(data, size))
+        cpp_free_managed_udf_string_array(data, size)
 
     result = Column.from_unique_ptr(move(c_result))
 

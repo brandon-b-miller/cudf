@@ -28,6 +28,7 @@ namespace strings {
 namespace udf {
 
 class udf_string;
+class managed_udf_string;
 
 /**
  * @brief Return a cudf::string_view array for the given strings column
@@ -57,6 +58,11 @@ std::unique_ptr<rmm::device_buffer> to_string_view_array(cudf::column_view const
 std::unique_ptr<cudf::column> column_from_udf_string_array(udf_string* d_strings,
                                                            cudf::size_type size);
 
+
+std::unique_ptr<cudf::column> column_from_managed_udf_string_array(managed_udf_string* managed_strings, 
+                                                                   cudf::size_type size);
+
+
 /**
  * @brief Frees a vector of udf_string objects
  *
@@ -67,6 +73,7 @@ std::unique_ptr<cudf::column> column_from_udf_string_array(udf_string* d_strings
  * @param size The number of elements in the d_strings array
  */
 void free_udf_string_array(udf_string* d_strings, cudf::size_type size);
+void free_managed_udf_string_array(managed_udf_string* managed_strings, cudf::size_type size);
 
 }  // namespace udf
 }  // namespace strings

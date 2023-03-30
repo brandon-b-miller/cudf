@@ -19,15 +19,37 @@ from numba import cuda
 size_type = types.int32
 
 
+### debuggin utilities
+def validate_mi(context, builder, ptr):
+    _validate_mi = cuda.declare_device("validate_meminfo", size_type(types.voidptr))
+    def cuda_validate_func(ptr):
+        return _validate_mi(ptr)
+
+
+    context.compile_internal(
+        builder,
+        cuda_validate_func,
+        size_type(types.voidptr),
+        (ptr,)
+    )
+
 # String object definitions
-class UDFString(types.StructRef):
+class UDFString(types.Type):
 
     np_dtype = np.dtype("object")
+
+    def __init__(self):
+        super().__init__(name="udf_string")
 
     @property
     def return_type(self):
         return self
 
+
+class ManagedUDFString(types.Type):
+    def __init__(self):
+        super().__init__(name='managed_udf_string')
+    
 
 class StringView(types.Type):
 
@@ -59,21 +81,8 @@ class stringview_model(models.StructModel):
     def __init__(self, dmm, fe_type):
         super().__init__(dmm, fe_type, self._members)
 
-def validate_mi(context, builder, ptr):
-    _validate_mi = cuda.declare_device("validate_meminfo", size_type(types.voidptr))
-    def cuda_validate_func(ptr):
-        return _validate_mi(ptr)
-
-
-    context.compile_internal(
-        builder,
-        cuda_validate_func,
-        size_type(types.voidptr),
-        (ptr,)
-    )
-
 @register_model(UDFString)
-class udf_string_model(models.StructRefModel):
+class udf_string_model(models.StructModel):
     # from udf_string.hpp:
     # private:
     #   char* m_data{};
@@ -84,46 +93,37 @@ class udf_string_model(models.StructRefModel):
         ("m_data", types.CPointer(types.char)),
         ("m_bytes", size_type),
         ("m_size", size_type),
-        #        ("meminfo", types.MemInfoPointer(types.void))
     )
 
     def __init__(self, dmm, fe_type):
-        super(models.StructRefModel, self).__init__(dmm, fe_type, members=self._members)
+        super().__init__(dmm, fe_type, self._members)
+
+udf_string = UDFString()
+
+@register_model(ManagedUDFString)
+class managed_udf_string_model(models.StructModel):
+
+    _members = (
+        ("meminfo", types.voidptr),
+        ("udf_string", types.CPointer(udf_string))
+    )
+
+    def __init__(self, dmm, fe_type):
+        super().__init__(dmm, fe_type, self._members)
+
 
     def has_nrt_meminfo(self):
         return True
 
     def get_nrt_meminfo(self, builder, value):
-        char_ptr_ty = ir.PointerType(ir.IntType(8))
-        # obtain the address of the first struct member
-        # the first element, m_data is an i8*, so this is an i8**
-        udf_str = cgutils.create_struct_proxy(udf_string)(
-            cuda_target.target_context, 
-            builder, 
-            value=value
-        )
-        start = udf_str.m_data
-        udf_str_addr = builder.ptrtoint(start, ir.IntType(64))
+        udf_str_and_meminfo = cgutils.create_struct_proxy(managed_udf_string)(cuda_target.target_context, builder, value=value)
+        return udf_str_and_meminfo.meminfo
 
-        # meminfo is hidden 8 bytes behind the udf_str's first member
-        mi_ptr = builder.sub(builder.ptrtoint(udf_str_addr, ir.IntType(64)), ir.Constant(ir.IntType(64), 8))
-        res = builder.inttoptr(mi_ptr, char_ptr_ty)
-        validate_mi(cuda_target.target_context, builder, res)
-        return res
 
-default_manager.register(UDFString, udf_string_model)
-structref.define_attributes(UDFString)
-
-any_string_ty = (StringView, UDFString, types.StringLiteral)
+managed_udf_string = ManagedUDFString()
+any_string_ty = (StringView, ManagedUDFString, types.StringLiteral)
 string_view = StringView()
-udf_string = UDFString(
-    fields=[
-        ("m_data", types.CPointer(types.char)),
-        ("m_bytes", size_type),
-        ("m_size", size_type),
-    ]
-)
-#udf_string = UDFString()
+
 
 class StrViewArgHandler:
     """
@@ -320,4 +320,4 @@ register_stringview_binaryop(operator.ge, types.boolean)
 register_stringview_binaryop(operator.contains, types.boolean)
 
 # st + other
-register_stringview_binaryop(operator.add, udf_string)
+register_stringview_binaryop(operator.add, managed_udf_string)

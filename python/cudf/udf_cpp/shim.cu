@@ -240,7 +240,7 @@ extern "C" __device__ int udf_string_from_string_view(int* nb_retbal,
   auto str_view_ptr = reinterpret_cast<cudf::string_view const*>(str);
   auto udf_str_ptr  = new (udf_str) udf_string;
   *udf_str_ptr      = udf_string(*str_view_ptr);
-
+  printf("inside udf_string_from_string_view. This UDF string's length is %d\n", udf_str_ptr->length());
   return 0;
 }
 
@@ -668,28 +668,31 @@ make_definition_idx(BlockIdxMax, float64, double);
 #undef make_definition_idx
 }
 
-__device__ void udf_str_dtor(void* udf_str, void* dtor_info) {
-  printf("\n\n\n deallocating! \n\n\n");
-  udf_string* ptr = static_cast<udf_string*>(udf_str);
-  delete ptr;
+__device__ void udf_str_dtor(void* udf_str, size_t size, void* dtor_info) {
+  printf("deallocating udf_string \n");
+  udf_string* ptr = reinterpret_cast<udf_string*>(udf_str);
+//  delete ptr;
+
+
+  printf("this UDF string's length is %d\n", ptr->length());
+  ptr->clear();
 }
 
 /*
 Create a MemInfo object around a udf_string object, these MemInfo objects will
 come initialized with an NRT_dtor_function which calls the real udf_string destructor
 */
-extern "C" __device__ int meminfo_from_new_udf_str(int* nb_retval, void** mi_ptr, void* udf_str) {
-  printf("calling meminfo_from_new_udf_str. \n");
-  *mi_ptr = NRT_MemInfo_new(udf_str, sizeof(udf_string), (NRT_dtor_function)udf_str_dtor, NULL);
+extern "C" __device__ int meminfo_from_new_udf_str(void** nb_retval, void* udf_str) {
+  printf("\nCreating new NRT_MemInfo. \n");
+  *nb_retval = NRT_MemInfo_new(udf_str, sizeof(udf_string), (NRT_dtor_function)udf_str_dtor, NULL);
+  //auto udf_str_ptr = reinterpret_cast<udf_string*>(udf_str);
+  //printf("Another UDF string validation: length=%d\n", udf_str_ptr->length());
   return 0;
 }
 
 extern "C" __device__ int validate_meminfo(int* nb_retval, void* ptr) {
   auto mi_ptr   = reinterpret_cast<NRT_MemInfo*>(ptr);
-  printf("meminfo address (integer): ");
-  printf("%p", ptr);
-  printf("validate meminfo: refcount=");
-  printf("%d", mi_ptr->refct);
-  printf("\n");
+  printf("meminfo address: %p\n", ptr);
+  printf("validate meminfo: refcount: %d\n", mi_ptr->refct);
   return 0;
 }
