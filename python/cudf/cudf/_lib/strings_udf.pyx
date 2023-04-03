@@ -55,12 +55,13 @@ def column_from_udf_string_array(DeviceBuffer d_buffer):
 
 def column_from_managed_udf_string_array(DeviceBuffer d_buffer):
     cdef size_t size = int(d_buffer.c_size() / sizeof(managed_udf_string))
+    print(f"\n\n\n dbuffersize: {d_buffer.c_size()}, udf_string_size: {sizeof(managed_udf_string)} \n\n\n")
     cdef managed_udf_string* data = <managed_udf_string*>d_buffer.c_data()
     cdef unique_ptr[column] c_result
-
+    from cuda import cuda
     with nogil:
         c_result = move(cpp_column_from_managed_udf_string_array(data, size))
-        cpp_free_managed_udf_string_array(data, size)
+        #cpp_free_managed_udf_string_array(data, size)
 
     result = Column.from_unique_ptr(move(c_result))
 

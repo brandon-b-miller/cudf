@@ -21,8 +21,11 @@ import cudf
 from cudf._lib.null_mask import bitmask_allocation_size_bytes
 from cudf.core.column.timedelta import _unit_to_nanoseconds_conversion
 from cudf.core.udf.strings_lowering import cast_string_view_to_managed_udf_string
-from cudf.core.udf.strings_typing import StringView, string_view, managed_udf_string
+from cudf.core.udf.strings_typing import StringView, string_view, managed_udf_string, ManagedUDFString
 from cudf.utils import dtypes as dtypeutils
+from numba.core import cgutils
+from cudf.core.udf.strings_lowering import validate_mi, validate_udfstr
+from numba import types
 
 supported_numpy_dtypes = [
     "bool",
@@ -413,6 +416,8 @@ def sv_to_managed_udf_str(sv):
     """
     pass
 
+def py_validate_mi(st):
+    pass
 
 @cuda_decl_registry.register_global(sv_to_managed_udf_str)
 class StringViewToUDFStringDecl(AbstractTemplate):
@@ -420,9 +425,25 @@ class StringViewToUDFStringDecl(AbstractTemplate):
         if isinstance(args[0], StringView) and len(args) == 1:
             return nb_signature(managed_udf_string, string_view)
 
+@cuda_decl_registry.register_global(py_validate_mi)
+class ValidateStDecl(AbstractTemplate):
+    def generic(self, args, kws):
+        if isinstance(args[0], ManagedUDFString) and len(args) == 1:
+            return nb_signature(types.void, managed_udf_string)
+
 
 @cuda_lower(sv_to_managed_udf_str, string_view)
 def sv_to_managed_udf_str_testing_lowering(context, builder, sig, args):
     return cast_string_view_to_managed_udf_string(
         context, builder, sig.args[0], sig.return_type, args[0]
     )
+
+
+@cuda_lower(py_validate_mi, managed_udf_string)
+def py_validate_mi_lowering(context, builder, sig, args):
+    st = cgutils.create_struct_proxy(managed_udf_string)(context, builder, value=args[0])
+    mi = st.meminfo
+    #tvalidate_mi(context, builder, mi)
+
+    udfstr = st.udf_string
+    #validate_udfstr(context, builder, udfstr)

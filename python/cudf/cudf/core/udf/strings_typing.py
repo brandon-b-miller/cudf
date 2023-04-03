@@ -105,7 +105,7 @@ class managed_udf_string_model(models.StructModel):
 
     _members = (
         ("meminfo", types.voidptr),
-        ("udf_string", types.CPointer(udf_string))
+        ("udf_string", udf_string)
     )
 
     def __init__(self, dmm, fe_type):
@@ -114,7 +114,7 @@ class managed_udf_string_model(models.StructModel):
 
     def has_nrt_meminfo(self):
         return True
-
+    
     def get_nrt_meminfo(self, builder, value):
         udf_str_and_meminfo = cgutils.create_struct_proxy(managed_udf_string)(cuda_target.target_context, builder, value=value)
         return udf_str_and_meminfo.meminfo
@@ -141,7 +141,7 @@ class StrViewArgHandler:
 
     def prepare_args(self, ty, val, **kwargs):
         if isinstance(ty, types.CPointer) and isinstance(
-            ty.dtype, (StringView, UDFString)
+            ty.dtype, (StringView, UDFString, ManagedUDFString)
         ):
             return types.uint64, val.ptr if isinstance(
                 val, rmm._lib.device_buffer.DeviceBuffer

@@ -13,15 +13,17 @@ import rmm
 import cudf
 from cudf._lib.strings_udf import (
     column_from_udf_string_array,
+    column_from_managed_udf_string_array,
     column_to_string_view_array,
 )
 from cudf.core.udf.strings_typing import (
     str_view_arg_handler,
     string_view,
     udf_string,
+    managed_udf_string
 )
 from cudf.core.udf.utils import _PTX_FILE, _get_extensionty_size
-from cudf.testing._utils import assert_eq, sv_to_managed_udf_str
+from cudf.testing._utils import assert_eq, sv_to_managed_udf_str, py_validate_mi
 
 
 def get_kernels(func, dtype, size):
@@ -38,7 +40,7 @@ def get_kernels(func, dtype, size):
     func = cuda.jit(device=True, debug=True,opt=False)(func)
 
     if dtype == "str":
-        outty = CPointer(udf_string)
+        outty = CPointer(managed_udf_string)
     else:
         outty = numba.np.numpy_support.from_dtype(dtype)[::1]
     sig = nb_signature(void, CPointer(string_view), outty)
@@ -75,7 +77,7 @@ def run_udf_test(data, func, dtype):
     """
     if dtype == "str":
         output = rmm.DeviceBuffer(
-            size=len(data) * _get_extensionty_size(udf_string)
+            size=len(data) * _get_extensionty_size(managed_udf_string)
         )
     else:
         dtype = np.dtype(dtype)
@@ -89,10 +91,9 @@ def run_udf_test(data, func, dtype):
 
     sv_kernel.forall(len(data))(str_views, output)
     if dtype == "str":
-        result = column_from_udf_string_array(output)
+        result = column_from_managed_udf_string_array(output)
     else:
         result = output
-
     got = cudf.Series(result, dtype=dtype)
     assert_eq(expect, got, check_dtype=False)
     udf_str_kernel.forall(len(data))(str_views, output)

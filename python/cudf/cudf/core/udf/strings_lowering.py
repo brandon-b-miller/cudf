@@ -145,39 +145,35 @@ def cast_string_literal_to_string_view(context, builder, fromty, toty, val):
 def cast_string_view_to_managed_udf_string(context, builder, fromty, toty, val):
     sv_ptr = builder.alloca(default_manager[fromty].get_value_type())
     managed_str = _new_managed_udf_string(context, builder)
+
+    udf_string_ptr = builder.alloca(default_manager[udf_string].get_value_type())
+
     builder.store(val, sv_ptr)
     _ = context.compile_internal(
         builder,
         call_create_udf_string_from_string_view,
         nb_signature(types.void, _STR_VIEW_PTR, types.CPointer(udf_string)),
-        (sv_ptr, managed_str.udf_string),
+        (sv_ptr, udf_string_ptr),
     )
-
+    managed_str.udf_string = builder.load(udf_string_ptr)
     
     return managed_str._getvalue()
 
-
-@cuda_lowering_registry.lower_cast(managed_udf_string, udf_string)
-def cast_managed_udf_string_to_udf_string(context, builder, fromty, toty, val):
-    """
-    Called when the user UDF returns a managed string, used on the setitem
-    call to the output array which is of type udf_string*
-    """
-    managed = cgutils.create_struct_proxy(managed_udf_string)(context, builder, value=val)
-    res = cgutils.create_struct_proxy(udf_string)(context, builder, value=builder.load(managed.udf_string))
-    return res._getvalue()
-
-
 @cuda_lowering_registry.lower_cast(managed_udf_string, string_view)
 def cast_managed_udf_string_to_string_view(context, builder, fromty, toty, val):
-    managed = cgutils.create_struct_proxy(managed_udf_string)(context, builder, value=val)
+#    managed = cgutils.create_struct_proxy(managed_udf_string)(context, builder, value=val)
     sv_ptr = builder.alloca(default_manager[toty].get_value_type())
+
+    managed_ptr = builder.alloca(default_manager[fromty].get_value_type())
+    builder.store(val, managed_ptr)
+
+    udf_str_ptr = builder.gep(managed_ptr, [ir.IntType(32)(0), ir.IntType(32)(1)])
 
     context.compile_internal(
         builder,
         call_create_string_view_from_udf_string,
         nb_signature(types.void, _UDF_STRING_PTR, _STR_VIEW_PTR),
-        (managed.udf_string, sv_ptr),
+        (udf_str_ptr, sv_ptr),
     )
 
     result = cgutils.create_struct_proxy(string_view)(
@@ -185,6 +181,17 @@ def cast_managed_udf_string_to_string_view(context, builder, fromty, toty, val):
     )
 
     return result._getvalue()
+
+
+@cuda_lower(operator.setitem, types.CPointer(managed_udf_string), types.Integer, types.Any)
+def setitem_cpointer_managed_udf_string(context, builder, sig, args):
+    base_ptr, idx, val = args
+    elem_ptr = builder.gep(base_ptr, [idx])
+    builder.store(val, elem_ptr)
+   # managed = cgutils.create_struct_proxy(managed_udf_string)(context, builder, value=val)
+    #validate_udfstr(context, builder, managed.udf_string)
+    context.nrt.incref(builder, managed_udf_string, val)
+#    validate_udfstr(context, builder, managed.udf_string)
 
 
 # utilities
@@ -237,12 +244,15 @@ def concat_impl(context, builder, sig, args):
     builder.store(args[1], rhs_ptr)
 
     managed = _new_managed_udf_string(context, builder)
+    udf_string_ptr = builder.alloca(default_manager[udf_string].get_value_type())
     _ = context.compile_internal(
         builder,
         call_concat_string_view,
         types.void(_UDF_STRING_PTR, _STR_VIEW_PTR, _STR_VIEW_PTR),
-        (managed.udf_string, lhs_ptr, rhs_ptr),
+        (udf_string_ptr, lhs_ptr, rhs_ptr),
     )
+    managed.udf_string = builder.load(udf_string_ptr)
+
     return managed._getvalue()
 
 
@@ -292,25 +302,37 @@ def validate_mi(context, builder, ptr):
     )
 
 
+### debugging
+def validate_udfstr(context, builder, ptr):
+    _validate_udfstr = cuda.declare_device("validate_udfstr", size_type(_UDF_STRING_PTR))
+    def cuda_validate_udfstr(ptr):
+        return _validate_udfstr(ptr)
+
+    context.compile_internal(
+        builder,
+        cuda_validate_udfstr,
+        size_type(_UDF_STRING_PTR),
+        (ptr,)
+    )
+
+
 
 def _new_managed_udf_string(context, builder):
     """
     allocate a udf_string and a NRT_MemInfo as part of one struct
     and initialize the NRT_MemInfo with a refct=1.
     """
-
-    managed = cgutils.create_struct_proxy(managed_udf_string)(context, builder)
-    managed.udf_string = builder.alloca(default_manager[udf_string].get_value_type())
-
+    managed_ptr = builder.alloca(default_manager[managed_udf_string].get_value_type())
+    udf_str_ptr = builder.gep(managed_ptr, [ir.IntType(32)(0), ir.IntType(32)(1)])
 
     mi = context.compile_internal(
         builder,
         new_meminfo_from_udf_str,
         types.voidptr(_UDF_STRING_PTR),
-        (managed.udf_string,)
+        (udf_str_ptr,)
     )
-
-    validate_mi(context, builder, mi)
+    
+    managed = cgutils.create_struct_proxy(managed_udf_string)(context, builder, value=builder.load(managed_ptr))
     managed.meminfo = mi
 
     return managed

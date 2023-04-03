@@ -673,8 +673,10 @@ __device__ void udf_str_dtor(void* udf_str, size_t size, void* dtor_info) {
   udf_string* ptr = reinterpret_cast<udf_string*>(udf_str);
 //  delete ptr;
 
+  printf("this UDF string's address is %p\n", ptr);
 
   printf("this UDF string's length is %d\n", ptr->length());
+
   ptr->clear();
 }
 
@@ -694,5 +696,13 @@ extern "C" __device__ int validate_meminfo(int* nb_retval, void* ptr) {
   auto mi_ptr   = reinterpret_cast<NRT_MemInfo*>(ptr);
   printf("meminfo address: %p\n", ptr);
   printf("validate meminfo: refcount: %d\n", mi_ptr->refct);
+  return 0;
+}
+
+
+extern "C" __device__ int validate_udfstr(int* nb_retval, void* ptr) {
+  auto udf_str_ptr   = reinterpret_cast<udf_string*>(ptr);
+  printf("validate udfstr: length: %d\n", udf_str_ptr->length());
+  printf("validate udfstr: address %p\n", udf_str_ptr);
   return 0;
 }

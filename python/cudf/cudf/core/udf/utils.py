@@ -32,6 +32,7 @@ from cudf.core.udf.strings_typing import (
     str_view_arg_handler,
     string_view,
     udf_string,
+    managed_udf_string
 )
 from cudf.utils import cudautils
 from cudf.utils.dtypes import (
@@ -342,7 +343,8 @@ def _get_input_args_from_frame(fr):
 
 def _return_arr_from_dtype(dtype, size):
     if dtype == _cudf_str_dtype:
-        return rmm.DeviceBuffer(size=size * _get_extensionty_size(udf_string))
+        breakpoint()
+        return rmm.DeviceBuffer(size=size * _get_extensionty_size(managed_udf_string))
     return cp.empty(size, dtype=dtype)
 
 

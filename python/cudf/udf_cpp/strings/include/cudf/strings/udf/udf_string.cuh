@@ -277,6 +277,7 @@ __device__ inline bool udf_string::operator>=(cudf::string_view rhs) const noexc
 
 __device__ inline void udf_string::clear() noexcept
 {
+  printf("clear is being called...");
   deallocate(m_data);
   m_data     = nullptr;
   m_bytes    = 0;

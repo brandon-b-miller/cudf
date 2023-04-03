@@ -51,6 +51,10 @@ struct udf_string_to_string_view_transform_fn {
 struct managed_udf_string_to_string_view_transform_fn {
   __device__ cudf::string_view operator()(cudf::strings::udf::managed_udf_string const& managed_dstr)
   { 
+
+
+    printf("\n\n\n the length while transforming is: %d ", managed_dstr.udf_str.length());
+    printf("and the pointer is %p \n\n\n", managed_dstr.udf_str);
     return managed_dstr.udf_str.data() == nullptr ? cudf::string_view{}
                                   : cudf::string_view{managed_dstr.udf_str.data(), managed_dstr.udf_str.size_bytes()};
   }
@@ -104,7 +108,9 @@ std::unique_ptr<cudf::column> column_from_managed_udf_string_array(managed_udf_s
                     indices.data(),
                     managed_udf_string_to_string_view_transform_fn{});
 
-  return cudf::make_strings_column(indices, cudf::string_view(nullptr, 0), stream);
+  auto result = cudf::make_strings_column(indices, cudf::string_view(nullptr, 0), stream);
+  stream.synchronize();
+  return result;
 }
 
 /**
@@ -147,7 +153,8 @@ std::unique_ptr<cudf::column> column_from_udf_string_array(udf_string* d_strings
   return detail::column_from_udf_string_array(d_strings, size, cudf::get_default_stream());
 }
 
-std::unique_ptr<cudf::column> column_from_managed_udf_string_array(managed_udf_string* managed_strings, cudf::size_type size) {
+std::unique_ptr<cudf::column> column_from_managed_udf_string_array(managed_udf_string* managed_strings, 
+                                                                   cudf::size_type size) {
   return detail::column_from_managed_udf_string_array(managed_strings, size, cudf::get_default_stream());
 }
 
@@ -157,6 +164,7 @@ void free_udf_string_array(udf_string* d_strings, cudf::size_type size)
 }
 void free_managed_udf_string_array(managed_udf_string* managed_strings, cudf::size_type size)
 {
+
   detail::free_managed_udf_string_array(managed_strings, size, cudf::get_default_stream());
 }
 
