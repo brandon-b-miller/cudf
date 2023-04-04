@@ -188,11 +188,9 @@ def setitem_cpointer_managed_udf_string(context, builder, sig, args):
     base_ptr, idx, val = args
     elem_ptr = builder.gep(base_ptr, [idx])
     builder.store(val, elem_ptr)
-   # managed = cgutils.create_struct_proxy(managed_udf_string)(context, builder, value=val)
-    #validate_udfstr(context, builder, managed.udf_string)
     context.nrt.incref(builder, managed_udf_string, val)
-#    validate_udfstr(context, builder, managed.udf_string)
-
+    managed = cgutils.create_struct_proxy(managed_udf_string)(context, builder, value=val)
+    validate_mi(context, builder, managed.meminfo)
 
 # utilities
 _create_udf_string_from_string_view = cuda.declare_device(

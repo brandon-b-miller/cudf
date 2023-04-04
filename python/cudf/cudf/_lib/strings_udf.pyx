@@ -61,7 +61,7 @@ def column_from_managed_udf_string_array(DeviceBuffer d_buffer):
     from cuda import cuda
     with nogil:
         c_result = move(cpp_column_from_managed_udf_string_array(data, size))
-        #cpp_free_managed_udf_string_array(data, size)
+        cpp_free_managed_udf_string_array(data, size)
 
     result = Column.from_unique_ptr(move(c_result))
 

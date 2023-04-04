@@ -96,9 +96,12 @@ def run_udf_test(data, func, dtype):
         result = output
     got = cudf.Series(result, dtype=dtype)
     assert_eq(expect, got, check_dtype=False)
+
+    print("\n ** UDF STRING CAST TEST ** \n")
+
     udf_str_kernel.forall(len(data))(str_views, output)
     if dtype == "str":
-        result = column_from_udf_string_array(output)
+        result = column_from_managed_udf_string_array(output)
     else:
         result = output
 
