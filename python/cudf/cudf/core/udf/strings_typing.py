@@ -4,10 +4,12 @@ import operator
 
 import numpy as np
 from numba import types
+from numba.core import cgutils
 from numba.core.extending import models, register_model
 from numba.core.typing import signature as nb_signature
 from numba.core.typing.templates import AbstractTemplate, AttributeTemplate
 from numba.cuda.cudadecl import registry as cuda_decl_registry
+from numba.cuda.descriptor import cuda_target
 
 import rmm
 
@@ -26,6 +28,17 @@ class UDFString(types.Type):
     @property
     def return_type(self):
         return self
+
+
+class ManagedUDFString(types.Type):
+    """
+    Struct containing a UDFString and a MemInfo object
+    New strings created by the UDF are of type ManagedUDFString
+    and are reference counted by numba
+    """
+
+    def __init__(self):
+        super().__init__(name="managed_udf_string")
 
 
 class StringView(types.Type):
@@ -77,9 +90,41 @@ class udf_string_model(models.StructModel):
         super().__init__(dmm, fe_type, self._members)
 
 
+udf_string = UDFString()
+
+
+@register_model(ManagedUDFString)
+class managed_udf_string_model(models.StructModel):
+
+    _members = (("meminfo", types.voidptr), ("udf_string", udf_string))
+
+    def __init__(self, dmm, fe_type):
+        super().__init__(dmm, fe_type, self._members)
+
+    def has_nrt_meminfo(self):
+        """
+        Numba shall automamtically reference count types
+        with an underlying model that returns True when this
+        method is called
+        """
+        return True
+
+    def get_nrt_meminfo(self, builder, value):
+        """
+        Return a pointer to the MemInfo object responsible for
+        reference counting this ManagedUDFString
+        """
+        udf_str_and_meminfo = cgutils.create_struct_proxy(managed_udf_string)(
+            cuda_target.target_context, builder, value=value
+        )
+
+        return udf_str_and_meminfo.meminfo
+
+
+managed_udf_string = ManagedUDFString()
+
 any_string_ty = (StringView, UDFString, types.StringLiteral)
 string_view = StringView()
-udf_string = UDFString()
 
 
 class StrViewArgHandler:
@@ -98,7 +143,7 @@ class StrViewArgHandler:
 
     def prepare_args(self, ty, val, **kwargs):
         if isinstance(ty, types.CPointer) and isinstance(
-            ty.dtype, (StringView, UDFString)
+            ty.dtype, (StringView, UDFString, ManagedUDFString)
         ):
             return types.uint64, val.ptr if isinstance(
                 val, rmm._lib.device_buffer.DeviceBuffer

@@ -3,6 +3,7 @@
 import operator
 from functools import partial
 
+from llvmlite import ir
 from numba import cuda, types
 from numba.core import cgutils
 from numba.core.datamodel import default_manager
@@ -19,10 +20,65 @@ from cudf._lib.strings_udf import (
     get_special_case_mapping_table_ptr,
 )
 from cudf.core.udf.masked_typing import MaskedType
-from cudf.core.udf.strings_typing import size_type, string_view, udf_string
+from cudf.core.udf.strings_typing import (
+    managed_udf_string,
+    size_type,
+    string_view,
+    udf_string,
+)
 
 _STR_VIEW_PTR = types.CPointer(string_view)
 _UDF_STRING_PTR = types.CPointer(udf_string)
+
+
+# Utilities
+def _new_managed_udf_string(context, builder):
+    """
+    Allocate a udf_string and a NRT_MemInfo as part of one struct
+    and initialize the NRT_MemInfo with a refct=1.
+    """
+
+    # {i8*, {i8*, i32, i32}}*
+    managed_ptr = builder.alloca(
+        default_manager[managed_udf_string].get_value_type()
+    )
+
+    # {i8*, i32, i32}*
+    udf_str_ptr = builder.gep(
+        managed_ptr, [ir.IntType(32)(0), ir.IntType(32)(1)]
+    )
+
+    # Call the shim function which initializes an NRT_MemInfo object around the
+    # udf_string pointer
+    # i8*
+    mi = context.compile_internal(
+        builder,
+        new_meminfo_from_udf_str,
+        types.voidptr(_UDF_STRING_PTR),
+        (udf_str_ptr,),
+    )
+
+    managed = cgutils.create_struct_proxy(managed_udf_string)(
+        context,
+        builder,
+        value=builder.load(
+            managed_ptr
+        ),  # {i8*, {i8*, i32, i32}}* -> {i8*, {i8*, i32, i32}}
+    )
+    # i8* = i8*
+    managed.meminfo = mi
+
+    # {i8*, {i8*, i32, i32} by _value_
+    return managed
+
+
+_new_meminfo_from_udf_str = cuda.declare_device(
+    "meminfo_from_new_udf_str", types.voidptr(_UDF_STRING_PTR)
+)
+
+
+def new_meminfo_from_udf_str(udf_str):
+    return _new_meminfo_from_udf_str(udf_str)
 
 
 # CUDA function declarations
