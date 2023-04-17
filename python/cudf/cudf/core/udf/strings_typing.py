@@ -10,8 +10,10 @@ from numba.core.typing import signature as nb_signature
 from numba.core.typing.templates import AbstractTemplate, AttributeTemplate
 from numba.cuda.cudadecl import registry as cuda_decl_registry
 from numba.cuda.descriptor import cuda_target
-
+from numba import cuda
 import rmm
+from llvmlite import ir
+from numba.core.datamodel import default_manager
 
 # libcudf size_type
 size_type = types.int32
@@ -114,18 +116,46 @@ class managed_udf_string_model(models.StructModel):
         Return a pointer to the MemInfo object responsible for
         reference counting this ManagedUDFString
         """
-        udf_str_and_meminfo = cgutils.create_struct_proxy(managed_udf_string)(
-            cuda_target.target_context, builder, value=value
+        udf_str_and_meminfo = cgutils.create_struct_proxy(
+            managed_udf_string
+        )(
+            cuda_target.target_context, 
+            builder, 
+            value=value
         )
-
         return udf_str_and_meminfo.meminfo
 
 
 managed_udf_string = ManagedUDFString()
 
-any_string_ty = (StringView, UDFString, types.StringLiteral)
+any_string_ty = (StringView, UDFString, types.StringLiteral, ManagedUDFString)
 string_view = StringView()
 
+### debugging
+def validate_udfstr(context, builder, ptr):
+    _validate_udfstr = cuda.declare_device("validate_udfstr", size_type(types.CPointer(udf_string)))
+    def cuda_validate_udfstr(ptr):
+        return _validate_udfstr(ptr)
+
+    context.compile_internal(
+        builder,
+        cuda_validate_udfstr,
+        size_type(types.CPointer(udf_string)),
+        (ptr,)
+    )
+
+def set_mi_udfstr(context, builder, mi, udfstr):
+    _set_mi_udfstr = cuda.declare_device("set_meminfo_udf_str", size_type(types.voidptr, types.CPointer(udf_string)))
+    def func(mi, st):
+        return _set_mi_udfstr(mi, st)
+
+    breakpoint()
+    context.compile_internal(
+        builder,
+        func,
+        size_type(types.voidptr, types.CPointer(udf_string)),
+        (mi,udfstr)
+    )
 
 class StrViewArgHandler:
     """
@@ -238,7 +268,7 @@ class StringViewReplace(AbstractTemplate):
 
     def generic(self, args, kws):
         return nb_signature(
-            udf_string, string_view, string_view, recvr=self.this
+            managed_udf_string, string_view, string_view, recvr=self.this
         )
 
 
@@ -279,7 +309,7 @@ for func in string_return_attrs:
     setattr(
         StringViewAttrs,
         f"resolve_{func}",
-        create_binary_attr(func, udf_string),
+        create_binary_attr(func, managed_udf_string),
     )
 
 
@@ -299,17 +329,17 @@ for func in string_unary_funcs:
     setattr(
         StringViewAttrs,
         f"resolve_{func}",
-        create_identifier_attr(func, udf_string),
+        create_identifier_attr(func, managed_udf_string),
     )
 
 
 @cuda_decl_registry.register_attr
-class UDFStringAttrs(StringViewAttrs):
-    key = udf_string
+class ManagedUDFStringAttrs(StringViewAttrs):
+    key = managed_udf_string
 
 
 cuda_decl_registry.register_attr(StringViewAttrs)
-cuda_decl_registry.register_attr(UDFStringAttrs)
+cuda_decl_registry.register_attr(ManagedUDFStringAttrs)
 
 register_stringview_binaryop(operator.eq, types.boolean)
 register_stringview_binaryop(operator.ne, types.boolean)
@@ -322,4 +352,4 @@ register_stringview_binaryop(operator.ge, types.boolean)
 register_stringview_binaryop(operator.contains, types.boolean)
 
 # st + other
-register_stringview_binaryop(operator.add, udf_string)
+register_stringview_binaryop(operator.add, managed_udf_string)

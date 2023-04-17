@@ -667,12 +667,67 @@ make_definition_idx(BlockIdxMax, float64, double);
 
 __device__ void udf_str_dtor(void* udf_str, size_t size, void* dtor_info)
 {
+  //printf("\n destroying a udf string at address %p\n", udf_str);
   udf_string* ptr = reinterpret_cast<udf_string*>(udf_str);
+  //printf("it has a length of %d",ptr->length());
+
   ptr->~udf_string();
 }
 
+struct meminfo_and_str {
+  NRT_MemInfo mi;
+  udf_string st;
+};
+
+/*
+Create a new MemInfo object holding the reference count of a udf_string. When returning
+new strings, shim functions expect a pointer to a stack allocated buffer into which it
+will construct the udf_string it returns. Since one can not safely build a MemInfo object
+around this stack memory, we store a copy of the udf_string itself next to the MemInfo
+where it can be later used to destroy the underlying data.
+*/
 extern "C" __device__ int meminfo_from_new_udf_str(void** nb_retval, void* udf_str)
 {
-  *nb_retval = NRT_MemInfo_new(udf_str, sizeof(udf_string), (NRT_dtor_function)udf_str_dtor, NULL);
+  // allocate enough room for both the meminfo and udf_string
+  meminfo_and_str* mi_and_str = (meminfo_and_str*)NRT_Allocate(sizeof(meminfo_and_str));
+  if (mi_and_str != NULL) {
+    auto mi_ptr = &(mi_and_str->mi);
+    udf_string* st_ptr = &(mi_and_str->st);
+
+    NRT_MemInfo_init(
+      mi_ptr,
+      st_ptr,
+      NULL,             
+      udf_str_dtor,      
+      NULL              
+    );             
+
+    // copy the udf_string to the extra heap space
+    udf_string* in_str_ptr = reinterpret_cast<udf_string*>(udf_str);
+    memcpy(st_ptr, in_str_ptr, sizeof(udf_string));
+    //printf("Creating new udf_string located at heap allocated address %p\n", st_ptr);
+  }
+
+  *nb_retval = &(mi_and_str->mi);
+  return 0;
+}
+
+
+
+extern "C" __device__ int validate_udfstr(int* nb_retval, void* ptr) {
+  auto udf_str_ptr   = reinterpret_cast<udf_string*>(ptr);
+  printf("validate udfstr: length: %d\n", udf_str_ptr->length());
+  printf("validate udfstr: address %p\n", udf_str_ptr);
+  return 0;
+}
+
+extern "C" __device__ int set_meminfo_udf_str(int* nb_retval, void* mi, void* udf_str) {
+  auto mi_ptr = reinterpret_cast<NRT_MemInfo*>(mi);
+
+  printf("meminfo being requested. This meminfo's data currently points to %p", mi_ptr->data);
+  printf("but needs to be pointing to %p\n", udf_str);
+
+  mi_ptr->data = udf_str;
+
   return 0;
 }
