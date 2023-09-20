@@ -18,7 +18,7 @@ from numba.types import CPointer, Poison, Record, Tuple, boolean, int64, void
 import rmm
 
 from cudf._lib.strings_udf import (
-    column_from_udf_string_array,
+    column_from_managed_udf_string_array,
     column_to_string_view_array,
 )
 from cudf.api.types import is_scalar
@@ -317,7 +317,7 @@ def _return_arr_from_dtype(dtype, size):
 
 def _post_process_output_col(col, retty):
     if retty == _cudf_str_dtype:
-        return column_from_udf_string_array(col)
+        return column_from_managed_udf_string_array(col)
     return as_column(col, retty)
 
 
