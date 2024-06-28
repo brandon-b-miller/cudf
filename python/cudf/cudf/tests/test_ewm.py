@@ -28,7 +28,14 @@ from cudf.testing import assert_eq
     ],
 )
 @pytest.mark.parametrize("adjust", [True, False])
-def test_ewma(data, params, adjust):
+@pytest.mark.parametrize("method", [
+    "mean", 
+    pytest.param("var", marks=pytest.mark.xfail(reason="Not yet supported")), 
+    pytest.param("std", marks=pytest.mark.xfail(reason="Not yet supported")),
+    pytest.param("cov", marks=pytest.mark.xfail(reason="Not yet supported")),
+    pytest.param("corr", marks=pytest.mark.xfail(reason="Not yet supported")),
+])
+def test_ewma(data, params, method, adjust):
     """
     The most basic test asserts that we obtain
     the same numerical values as pandas for various
@@ -40,7 +47,18 @@ def test_ewma(data, params, adjust):
     gsr = cudf.Series(data, dtype="float64")
     psr = gsr.to_pandas()
 
-    expect = psr.ewm(**params).mean()
-    got = gsr.ewm(**params).mean()
+    expect = getattr(psr.ewm(**params), method)()
+    got = getattr(gsr.ewm(**params), method)()
 
     assert_eq(expect, got)
+
+def test_ewm_error_cases():
+    data = cudf.Series([1.0, 2.0, 3.0, 4.0, 5.0], dtype="float64")
+    with pytest.raises(NotImplementedError):
+        data.ewm(min_periods=1)
+    with pytest.raises(NotImplementedError):
+        data.ewm(ignore_na=True)
+    with pytest.raises(NotImplementedError):
+        data.ewm(axis=1)
+    with pytest.raises(NotImplementedError):
+        data.ewm(times=[1, 2, 3, 4, 5])

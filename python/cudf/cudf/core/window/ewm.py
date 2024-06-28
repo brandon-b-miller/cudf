@@ -35,8 +35,7 @@ class ExponentialMovingWindow(_RollingBase):
         Not Supported
     adjust : bool, default True
         Controls assumptions about the first value in the sequence.
-        https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.ewm.html
-        for details.
+        See :meth:`pandas.DataFrame.ewm` for details.
     ignore_na : bool, default False
         Not Supported
     axis : {0, 1}, default 0
@@ -74,6 +73,7 @@ class ExponentialMovingWindow(_RollingBase):
     2     2
     3  <NA>
     4     4
+
     >>> df.ewm(com=0.5).mean()
               B
     0  0.000000
@@ -136,11 +136,9 @@ class ExponentialMovingWindow(_RollingBase):
         if not is_numeric_dtype(sr.dtype):
             raise TypeError("No numeric types to aggregate")
 
-        # libcudf ewm has special casing for nulls only
-        # and come what may with nans. It treats those nulls like
-        # pandas does nans in the same positions mathematically.
-        # as such we need to convert the nans to nulls before
-        # passing them in.
+        # libcudf weighting based on missing data applies to null values
+        # but has no special handling for NaNs. We convert NaNs to nulls
+        # to ensure that the behavior is consistent with pandas.
         to_libcudf_column = sr._column.astype("float64").nans_to_nulls()
 
         return self.obj._from_data_like_self(

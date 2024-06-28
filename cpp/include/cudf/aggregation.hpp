@@ -445,7 +445,7 @@ std::unique_ptr<Base> make_row_number_aggregation();
  *
  * @param center_of_mass the center of mass.
  * @param history which assumption to make about the first value
- * @return A EWM aggregation object
+ * @return A EWMA aggregation object
  */
 template <typename Base = aggregation>
 std::unique_ptr<Base> make_ewma_aggregation(double const center_of_mass, ewm_history history);

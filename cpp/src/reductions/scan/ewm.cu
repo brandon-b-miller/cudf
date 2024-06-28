@@ -31,7 +31,8 @@
 #include <thrust/transform_scan.h>
 
 namespace cudf {
-namespace detail {
+
+namespace {
 
 template <typename T>
 using pair_type = thrust::pair<T, T>;
@@ -295,7 +296,7 @@ struct ewma_functor {
                                      rmm::cuda_stream_view stream,
                                      rmm::device_async_resource_ref mr)
   {
-    auto const ewma_agg       = dynamic_cast<ewma_aggregation const*>(&agg);
+    auto const ewma_agg       = dynamic_cast<cudf::ewma_aggregation const*>(&agg);
     auto const history        = ewma_agg->history;
     auto const center_of_mass = ewma_agg->center_of_mass;
 
@@ -317,6 +318,10 @@ struct ewma_functor {
                                     0);
   }
 };
+
+} // namespace
+
+namespace detail {
 
 std::unique_ptr<column> exponentially_weighted_moving_average(column_view const& input,
                                                               scan_aggregation const& agg,
