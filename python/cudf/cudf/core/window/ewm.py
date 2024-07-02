@@ -81,7 +81,6 @@ class ExponentialMovingWindow(_RollingBase):
     2  1.615385
     3  1.615385
     4  3.670213
-
     >>> df.ewm(com=0.5, adjust=False).mean()
               B
     0  0.000000
