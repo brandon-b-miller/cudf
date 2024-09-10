@@ -24,6 +24,21 @@ from cudf_polars.utils import dtypes
 
 __all__ = ["translate_ir", "translate_named_expr"]
 
+errs = []
+
+def error_checked_singledispatch(func):
+    dispatched = singledispatch(func)
+
+    def wrapper(*args, **kwargs):
+        try:
+            return dispatched(*args, **kwargs)
+        except NotImplementedError as e:
+            errs.append(e)
+            return ir.IR({})
+        
+    wrapper.register = dispatched.register
+    
+    return wrapper
 
 class set_node(AbstractContextManager[None]):
     """
@@ -62,7 +77,7 @@ class set_node(AbstractContextManager[None]):
 noop_context: nullcontext[None] = nullcontext()
 
 
-@singledispatch
+@error_checked_singledispatch
 def _translate_ir(
     node: Any, visitor: NodeTraverser, schema: dict[str, plc.DataType]
 ) -> ir.IR:
@@ -362,7 +377,7 @@ def translate_named_expr(
     return expr.NamedExpr(n.output_name, translate_expr(visitor, n=n.node))
 
 
-@singledispatch
+@error_checked_singledispatch
 def _translate_expr(
     node: Any, visitor: NodeTraverser, dtype: plc.DataType
 ) -> expr.Expr:

@@ -188,6 +188,7 @@ def execute_with_cudf(
                     memory_resource=memory_resource,
                 )
             )
+            breakpoint()
     except exception as e:
         if bool(int(os.environ.get("POLARS_VERBOSE", 0))):
             warnings.warn(
