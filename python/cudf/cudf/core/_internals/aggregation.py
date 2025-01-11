@@ -80,6 +80,17 @@ class Aggregation:
                 else plc.aggregation.EWMHistory.FINITE,
             )
         )
+    
+    @classmethod
+    def ewmvar(cls, com: float = 1.0, adjust: bool = True) -> Self:
+        return cls(
+            plc.aggregation.ewmvar(
+                com,
+                plc.aggregation.EWMHistory.INFINITE
+                if adjust
+                else plc.aggregation.EWMHistory.FINITE,
+            )
+        )
 
     @classmethod
     def size(cls) -> Self:

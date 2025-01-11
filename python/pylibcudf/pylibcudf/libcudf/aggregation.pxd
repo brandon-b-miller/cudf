@@ -158,6 +158,10 @@ cdef extern from "cudf/aggregation.hpp" namespace "cudf" nogil:
         double com, ewm_history adjust
     ) except +libcudf_exception_handler
 
+    cdef unique_ptr[T] make_ewmvar_aggregation[T](
+        double com, ewm_history adjust
+    ) except +libcudf_exception_handler
+
     cdef unique_ptr[T] make_correlation_aggregation[T](
         correlation_type type, size_type min_periods) except +libcudf_exception_handler
 

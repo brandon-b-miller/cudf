@@ -158,11 +158,30 @@ class ExponentialMovingWindow(_RollingBase):
             )
         return self._apply_agg("ewma")
 
+    def var(
+            self, bias: bool = False, numeric_only: bool = False, engine=None, engine_kwargs=None
+    ):
+        """
+        Calculate the ewm (exponential weighted moment) variance.
+        """
+        if numeric_only is not False:
+            raise NotImplementedError(
+                "numeric_only is currently not supported."
+            )
+        if engine is not None:
+            raise NotImplementedError(
+                "engine is non-functional and added for compatibility with pandas."
+            )
+        if engine_kwargs is not None:
+            raise NotImplementedError(
+                "engine_kwargs is non-functional and added for compatibility with pandas."
+            )
+        # TODO: bias
+        return self._apply_agg("ewmvar")
+
+
     def sum(self, numeric_only: bool = False, engine=None, engine_kwargs=None):
         raise NotImplementedError("sum not yet supported.")
-
-    def var(self, bias: bool = False, numeric_only: bool = False):
-        raise NotImplementedError("var not yet supported.")
 
     def std(self, bias: bool = False, numeric_only: bool = False):
         raise NotImplementedError("std not yet supported.")

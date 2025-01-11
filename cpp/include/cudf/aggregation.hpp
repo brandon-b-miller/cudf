@@ -105,6 +105,7 @@ class aggregation {
     NTH_ELEMENT,     ///< get the nth element
     ROW_NUMBER,      ///< get row-number of current index (relative to rolling window)
     EWMA,            ///< get exponential weighted moving average at current index
+    EWMVAR,          ///< get exponential weighted moving variance at current index
     RANK,            ///< get rank of current index
     COLLECT_LIST,    ///< collect values into a list
     COLLECT_SET,     ///< collect values into a list without duplicate entries
@@ -451,6 +452,17 @@ std::unique_ptr<Base> make_row_number_aggregation();
  */
 template <typename Base = aggregation>
 std::unique_ptr<Base> make_ewma_aggregation(double const center_of_mass, ewm_history history);
+
+/**
+ * @brief Factory to create an EWMVAR aggregation
+ *
+ * @param center_of_mass the center of mass.
+ * @param history which assumption to make about the first value
+ * @return A EWM aggregation object
+ */
+template <typename Base = aggregation>
+std::unique_ptr<Base> make_ewmvar_aggregation(double const center_of_mass, ewm_history history);
+
 
 /**
  * @brief Factory to create a RANK aggregation

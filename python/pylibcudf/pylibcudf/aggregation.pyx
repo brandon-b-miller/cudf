@@ -20,6 +20,7 @@ from pylibcudf.libcudf.aggregation cimport (
     make_count_aggregation,
     make_covariance_aggregation,
     make_ewma_aggregation,
+    make_ewmvar_aggregation,
     make_max_aggregation,
     make_mean_aggregation,
     make_median_aggregation,
@@ -82,6 +83,7 @@ __all__ = [
     "count",
     "covariance",
     "ewma",
+    "ewmvar",
     "max",
     "mean",
     "median",
@@ -258,6 +260,28 @@ cpdef Aggregation ewma(float center_of_mass, ewm_history history):
         move(make_ewma_aggregation[aggregation](center_of_mass, history))
     )
 
+cpdef Aggregation ewmvar(
+    float center_of_mass, ewm_history history
+):
+    """Create a EWMVAR aggregation.
+
+    For details, see :cpp:func:`make_ewmvar_aggregation`.
+
+    Parameters
+    ----------
+    center_of_mass : float
+        The decay in terms of the center of mass
+    history : ewm_history
+        Whether or not to treat the history as infinite.
+
+    Returns
+    -------
+    Aggregation
+        The EWMVAR aggregation.
+    """
+    return Aggregation.from_libcudf(
+        move(make_ewmvar_aggregation[aggregation](center_of_mass, history))
+    )
 
 cpdef Aggregation count(null_policy null_handling = null_policy.EXCLUDE):
     """Create a count aggregation.

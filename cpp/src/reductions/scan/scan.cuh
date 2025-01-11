@@ -42,6 +42,13 @@ std::unique_ptr<column> exponentially_weighted_moving_average(column_view const&
                                                               rmm::cuda_stream_view stream,
                                                               rmm::device_async_resource_ref mr);
 
+// exponentially weigted moving variance of the input
+std::unique_ptr<column> exponentially_weighted_moving_variance(column_view const& input,
+                                                               scan_aggregation const& agg,
+                                                               rmm::cuda_stream_view stream,
+                                                               rmm::device_async_resource_ref mr);
+
+
 template <template <typename> typename DispatchFn>
 std::unique_ptr<column> scan_agg_dispatch(column_view const& input,
                                           scan_aggregation const& agg,
@@ -66,6 +73,7 @@ std::unique_ptr<column> scan_agg_dispatch(column_view const& input,
       return type_dispatcher<dispatch_storage_type>(
         input.type(), DispatchFn<DeviceProduct>(), input, output_mask, stream, mr);
     case aggregation::EWMA: return exponentially_weighted_moving_average(input, agg, stream, mr);
+    case aggregation::EWMVAR: return exponentially_weighted_moving_variance(input, agg, stream, mr);
     default: CUDF_FAIL("Unsupported aggregation operator for scan");
   }
 }
