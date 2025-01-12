@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, NVIDIA CORPORATION.
+# Copyright (c) 2022-2025, NVIDIA CORPORATION.
 import pytest
 
 import cudf
@@ -45,6 +45,7 @@ def test_ewma(data, params, adjust):
 
     assert_eq(expect, got)
 
+
 @pytest.mark.parametrize(
     "data",
     [
@@ -68,7 +69,8 @@ def test_ewma(data, params, adjust):
     ],
 )
 @pytest.mark.parametrize("adjust", [True, False])
-def test_ewmvar(data, params, adjust):
+@pytest.mark.parametrize("bias", [True])
+def test_ewmvar(data, params, adjust, bias):
     """
     The most basic test asserts that we obtain
     the same numerical values as pandas for various
@@ -80,7 +82,7 @@ def test_ewmvar(data, params, adjust):
     gsr = cudf.Series(data, dtype="float64")
     psr = gsr.to_pandas()
 
-    expect = psr.ewm(**params).var()
-    got = gsr.ewm(**params).var()
+    expect = psr.ewm(**params).var(bias=bias)
+    got = gsr.ewm(**params).var(bias=bias)
 
     assert_eq(expect, got)

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -462,7 +462,6 @@ std::unique_ptr<Base> make_ewma_aggregation(double const center_of_mass, ewm_his
  */
 template <typename Base = aggregation>
 std::unique_ptr<Base> make_ewmvar_aggregation(double const center_of_mass, ewm_history history);
-
 
 /**
  * @brief Factory to create a RANK aggregation

@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, NVIDIA CORPORATION.
+# Copyright (c) 2022-2025, NVIDIA CORPORATION.
 from __future__ import annotations
 
 import warnings
@@ -159,7 +159,11 @@ class ExponentialMovingWindow(_RollingBase):
         return self._apply_agg("ewma")
 
     def var(
-            self, bias: bool = False, numeric_only: bool = False, engine=None, engine_kwargs=None
+        self,
+        bias: bool = False,
+        numeric_only: bool = False,
+        engine=None,
+        engine_kwargs=None,
     ):
         """
         Calculate the ewm (exponential weighted moment) variance.
@@ -178,7 +182,6 @@ class ExponentialMovingWindow(_RollingBase):
             )
         # TODO: bias
         return self._apply_agg("ewmvar")
-
 
     def sum(self, numeric_only: bool = False, engine=None, engine_kwargs=None):
         raise NotImplementedError("sum not yet supported.")

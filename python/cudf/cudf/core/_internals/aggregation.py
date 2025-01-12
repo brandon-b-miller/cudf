@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2024, NVIDIA CORPORATION.
+# Copyright (c) 2020-2025, NVIDIA CORPORATION.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
@@ -80,7 +80,7 @@ class Aggregation:
                 else plc.aggregation.EWMHistory.FINITE,
             )
         )
-    
+
     @classmethod
     def ewmvar(cls, com: float = 1.0, adjust: bool = True) -> Self:
         return cls(

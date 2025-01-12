@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -715,7 +715,7 @@ class ewma_aggregation final : public scan_aggregation {
  * @brief Derived class for specifying an ewmvar aggregation
  */
 class ewmvar_aggregation final : public scan_aggregation {
-public:
+ public:
   double const center_of_mass;
   cudf::ewm_history history;
 

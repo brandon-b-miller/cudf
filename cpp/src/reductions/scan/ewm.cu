@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2022-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -285,14 +285,47 @@ rmm::device_uvector<T> compute_ewmvar_adjust(column_view const& input,
                                              rmm::cuda_stream_view stream,
                                              rmm::device_async_resource_ref mr)
 {
-  CUDF_FAIL("Not Implemented");
+
+  // get xi**2
+  std::unique_ptr<column> xi_sqr = make_fixed_width_column(
+    cudf::data_type{cudf::type_id::FLOAT64}, input.size(), copy_bitmask(input), input.null_count());
+  mutable_column_view xi_sqr_d = xi_sqr->mutable_view();
+  thrust::transform(rmm::exec_policy(stream),
+                    input.begin<double>(),
+                    input.end<double>(),
+                    xi_sqr_d.begin<double>(),
+                    [=] __host__ __device__(double input) -> double { return input * input; });
+
+  // get EWMA[xi**2]
+  //std::unique_ptr<column> ewma_xi_sqr = ewma((*xi_sqr).view(), com, adjust, stream, mr);
+  rmm::device_uvector<T> ewma_xi_sqr = compute_ewma_adjust(xi_sqr->view(), beta, stream, mr);
+
+
+  // get EWMA[xi]
+  //std::unique_ptr<column> ewma_xi = ewma(input, com, adjust, stream, mr);
+  rmm::device_uvector<T> ewma_xi = compute_ewma_adjust(input, beta, stream, mr);
+
+
+  // reuse the memory from computing xi_sqr to write the output
+  thrust::transform(
+    rmm::exec_policy(stream),
+    ewma_xi.begin(),
+    ewma_xi.end(),
+    ewma_xi_sqr.begin(),
+    ewma_xi.begin(),
+    [=] __host__ __device__(double x, double xsqrd) -> double { return xsqrd - x * x; });
+
+  // return means;
+  return ewma_xi;
 }
+
+
 
 template <typename T>
 rmm::device_uvector<T> compute_ewmvar_noadjust(column_view const& input,
-                                             T const beta,
-                                             rmm::cuda_stream_view stream,
-                                             rmm::device_async_resource_ref mr)
+                                               T const beta,
+                                               rmm::cuda_stream_view stream,
+                                               rmm::device_async_resource_ref mr)
 {
   CUDF_FAIL("Not Implemented");
 }
@@ -352,7 +385,7 @@ struct ewmvar_functor {
                                      rmm::cuda_stream_view stream,
                                      rmm::device_async_resource_ref mr)
   {
-    auto const ewmvar_agg       = dynamic_cast<ewmvar_aggregation const*>(&agg);
+    auto const ewmvar_agg     = dynamic_cast<ewmvar_aggregation const*>(&agg);
     auto const history        = ewmvar_agg->history;
     auto const center_of_mass = ewmvar_agg->center_of_mass;
 
@@ -384,9 +417,9 @@ std::unique_ptr<column> exponentially_weighted_moving_average(column_view const&
 }
 
 std::unique_ptr<column> exponentially_weighted_moving_variance(column_view const& input,
-                                                              scan_aggregation const& agg,
-                                                              rmm::cuda_stream_view stream,
-                                                              rmm::device_async_resource_ref mr)
+                                                               scan_aggregation const& agg,
+                                                               rmm::cuda_stream_view stream,
+                                                               rmm::device_async_resource_ref mr)
 {
   return type_dispatcher(input.type(), ewmvar_functor{}, agg, input, stream, mr);
 }
@@ -402,7 +435,6 @@ std::unique_ptr<column> exponentially_weighted_moving_variance(column_view const
  * handling in every case. This leads to eight possibilities.
  */
 
-
 /*
 std::unique_ptr<column> exponentially_weighted_moving_variance(column_view const& input,
                                                                scan_aggregation const& agg,
@@ -414,8 +446,8 @@ std::unique_ptr<column> exponentially_weighted_moving_variance(column_view const
 
   // get xi**2
   std::unique_ptr<column> xi_sqr = make_fixed_width_column(
-    cudf::data_type{cudf::type_id::FLOAT64}, input.size(), copy_bitmask(input), input.null_count(), stream, mr);
-  mutable_column_view xi_sqr_d = xi_sqr->mutable_view();
+    cudf::data_type{cudf::type_id::FLOAT64}, input.size(), copy_bitmask(input), input.null_count(),
+stream, mr); mutable_column_view xi_sqr_d = xi_sqr->mutable_view();
   thrust::transform(rmm::exec_policy(stream),
                     input.begin<double>(),
                     input.end<double>(),
@@ -424,7 +456,8 @@ std::unique_ptr<column> exponentially_weighted_moving_variance(column_view const
 
   // get EWMA[xi**2]
   std::unique_ptr<column> ewma_xi_sqr = compute_ewma_adjust(xi_sqr, center_of_mass, stream, mr);
-  //std::unique_ptr<column> ewma_xi_sqr = ewma((*xi_sqr).view(), center_of_mass, adjust, stream, mr);
+  //std::unique_ptr<column> ewma_xi_sqr = ewma((*xi_sqr).view(), center_of_mass, adjust, stream,
+mr);
 
   // get EWMA[xi]
   //std::unique_ptr<column> ewma_xi = ewma(input, com, adjust, stream, mr);

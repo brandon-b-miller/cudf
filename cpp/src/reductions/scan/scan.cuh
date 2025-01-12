@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2021-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,7 +47,6 @@ std::unique_ptr<column> exponentially_weighted_moving_variance(column_view const
                                                                scan_aggregation const& agg,
                                                                rmm::cuda_stream_view stream,
                                                                rmm::device_async_resource_ref mr);
-
 
 template <template <typename> typename DispatchFn>
 std::unique_ptr<column> scan_agg_dispatch(column_view const& input,
