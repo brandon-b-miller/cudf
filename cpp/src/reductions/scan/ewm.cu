@@ -30,6 +30,18 @@
 #include <thrust/scan.h>
 #include <thrust/transform_scan.h>
 
+template <typename T>
+void print_device_uvector(rmm::device_uvector<T>& input_vec) {
+
+  thrust::device_vector<T> debug_d(input_vec.size());
+  thrust::copy(input_vec.begin(), input_vec.end(), debug_d.begin());
+  thrust::host_vector<T> debug = debug_d;
+  for (size_t i = 0; i < input_vec.size(); i++) {
+    std::cout << debug[i] << " ";
+  }
+  std::cout << "finished\n\n\n";
+}
+
 namespace cudf {
 namespace detail {
 
@@ -296,17 +308,10 @@ rmm::device_uvector<T> compute_ewmvar_adjust(column_view const& input,
                     xi_sqr_d.begin<double>(),
                     [=] __host__ __device__(double input) -> double { return input * input; });
 
-  // get EWMA[xi**2]
-  //std::unique_ptr<column> ewma_xi_sqr = ewma((*xi_sqr).view(), com, adjust, stream, mr);
+
   rmm::device_uvector<T> ewma_xi_sqr = compute_ewma_adjust(xi_sqr->view(), beta, stream, mr);
-
-
-  // get EWMA[xi]
-  //std::unique_ptr<column> ewma_xi = ewma(input, com, adjust, stream, mr);
   rmm::device_uvector<T> ewma_xi = compute_ewma_adjust(input, beta, stream, mr);
 
-
-  // reuse the memory from computing xi_sqr to write the output
   thrust::transform(
     rmm::exec_policy(stream),
     ewma_xi.begin(),
@@ -315,7 +320,6 @@ rmm::device_uvector<T> compute_ewmvar_adjust(column_view const& input,
     ewma_xi.begin(),
     [=] __host__ __device__(double x, double xsqrd) -> double { return xsqrd - x * x; });
 
-  // return means;
   return ewma_xi;
 }
 
