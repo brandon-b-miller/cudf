@@ -331,7 +331,30 @@ rmm::device_uvector<T> compute_ewmvar_noadjust(column_view const& input,
                                                rmm::cuda_stream_view stream,
                                                rmm::device_async_resource_ref mr)
 {
-  CUDF_FAIL("Not Implemented");
+
+  // get xi**2
+  std::unique_ptr<column> xi_sqr = make_fixed_width_column(
+    cudf::data_type{cudf::type_id::FLOAT64}, input.size(), copy_bitmask(input), input.null_count());
+  mutable_column_view xi_sqr_d = xi_sqr->mutable_view();
+  thrust::transform(rmm::exec_policy(stream),
+                    input.begin<double>(),
+                    input.end<double>(),
+                    xi_sqr_d.begin<double>(),
+                    [=] __host__ __device__(double input) -> double { return input * input; });
+
+
+  rmm::device_uvector<T> ewma_xi_sqr = compute_ewma_noadjust(xi_sqr->view(), beta, stream, mr);
+  rmm::device_uvector<T> ewma_xi = compute_ewma_noadjust(input, beta, stream, mr);
+
+  thrust::transform(
+    rmm::exec_policy(stream),
+    ewma_xi.begin(),
+    ewma_xi.end(),
+    ewma_xi_sqr.begin(),
+    ewma_xi.begin(),
+    [=] __host__ __device__(double x, double xsqrd) -> double { return xsqrd - x * x; });
+
+  return ewma_xi;
 }
 
 struct ewma_functor {
