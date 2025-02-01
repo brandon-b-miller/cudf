@@ -180,8 +180,8 @@ class ExponentialMovingWindow(_RollingBase):
             raise NotImplementedError(
                 "engine_kwargs is non-functional and added for compatibility with pandas."
             )
-        # TODO: bias
-        return self._apply_agg("ewmvar")
+
+        return self._apply_agg("ewmvar", bias=bias)
 
     def sum(self, numeric_only: bool = False, engine=None, engine_kwargs=None):
         raise NotImplementedError("sum not yet supported.")
@@ -204,7 +204,7 @@ class ExponentialMovingWindow(_RollingBase):
         raise NotImplementedError("cov not yet supported.")
 
     def _apply_agg_column(
-        self, source_column: ColumnBase, agg_name: str
+        self, source_column: ColumnBase, agg_name: str, **kwargs
     ) -> ColumnBase:
         if not is_numeric_dtype(source_column.dtype):
             raise TypeError("No numeric types to aggregate")
@@ -215,8 +215,9 @@ class ExponentialMovingWindow(_RollingBase):
         # as such we need to convert the nans to nulls before
         # passing them in.
         to_libcudf_column = source_column.astype("float64").nans_to_nulls()
+
         return to_libcudf_column.scan(
-            agg_name, True, com=self.com, adjust=self.adjust
+            agg_name, True, com=self.com, adjust=self.adjust, bias=kwargs.get("bias", False)
         )
 
 

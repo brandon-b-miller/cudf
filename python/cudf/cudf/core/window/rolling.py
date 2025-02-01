@@ -34,13 +34,13 @@ class _RollingBase:
     obj: cudf.DataFrame | cudf.Series
 
     def _apply_agg_column(
-        self, source_column: ColumnBase, agg_name: str
+        self, source_column: ColumnBase, agg_name: str, **kwargs
     ) -> ColumnBase:
         raise NotImplementedError
 
-    def _apply_agg(self, agg_name: str) -> cudf.DataFrame | cudf.Series:
+    def _apply_agg(self, agg_name: str, **kwargs) -> cudf.DataFrame | cudf.Series:
         applied = (
-            self._apply_agg_column(col, agg_name) for col in self.obj._columns
+            self._apply_agg_column(col, agg_name, **kwargs) for col in self.obj._columns
         )
         return self.obj._from_data_like_self(
             self.obj._data._from_columns_like_self(applied)

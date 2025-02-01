@@ -82,13 +82,16 @@ class Aggregation:
         )
 
     @classmethod
-    def ewmvar(cls, com: float = 1.0, adjust: bool = True) -> Self:
+    def ewmvar(cls, com: float = 1.0, adjust: bool = True, bias: bool = False) -> Self:
         return cls(
             plc.aggregation.ewmvar(
                 com,
                 plc.aggregation.EWMHistory.INFINITE
                 if adjust
                 else plc.aggregation.EWMHistory.FINITE,
+                plc.aggregation.EWMBias.BIASED
+                if bias
+                else plc.aggregation.EWMBias.UNBIASED,
             )
         )
 

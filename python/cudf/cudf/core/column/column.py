@@ -1666,6 +1666,7 @@ class ColumnBase(Column, Serializable, BinaryOperand, Reducible):
 
     @acquire_spill_lock()
     def scan(self, scan_op: str, inclusive: bool, **kwargs) -> Self:
+        breakpoint()
         return type(self).from_pylibcudf(  # type: ignore[return-value]
             plc.reduce.scan(
                 self.to_pylibcudf(mode="read"),
