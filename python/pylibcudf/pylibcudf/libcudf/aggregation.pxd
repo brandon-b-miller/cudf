@@ -96,6 +96,10 @@ cdef extern from "cudf/aggregation.hpp" namespace "cudf" nogil:
         INFINITE
         FINITE
 
+    cpdef enum class ewm_bias(int32_t):
+        BIASED
+        UNBIASED
+
     cpdef enum class rank_method(int32_t):
         FIRST
         AVERAGE
@@ -172,7 +176,7 @@ cdef extern from "cudf/aggregation.hpp" namespace "cudf" nogil:
     ) except +libcudf_exception_handler
 
     cdef unique_ptr[T] make_ewmvar_aggregation[T](
-        double com, ewm_history adjust
+        double com, ewm_history adjust, ewm_bias bias
     ) except +libcudf_exception_handler
 
     cdef unique_ptr[T] make_correlation_aggregation[T](

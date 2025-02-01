@@ -65,6 +65,8 @@ from pylibcudf.libcudf.aggregation import \
 from pylibcudf.libcudf.aggregation import \
     ewm_history as EWMHistory  # no-cython-lint
 from pylibcudf.libcudf.aggregation import \
+    ewm_bias as EWMBias  # no-cython-lint
+from pylibcudf.libcudf.aggregation import \
     rank_method as RankMethod  # no-cython-lint
 from pylibcudf.libcudf.aggregation import \
     rank_percentage as RankPercentage  # no-cython-lint
@@ -277,7 +279,7 @@ cpdef Aggregation ewma(float center_of_mass, ewm_history history):
     )
 
 cpdef Aggregation ewmvar(
-    float center_of_mass, ewm_history history
+    float center_of_mass, ewm_history history, ewm_bias bias
 ):
     """Create a EWMVAR aggregation.
 
@@ -289,6 +291,8 @@ cpdef Aggregation ewmvar(
         The decay in terms of the center of mass
     history : ewm_history
         Whether or not to treat the history as infinite.
+    bias : ewm_bias
+        Whether or not to use a biased estimator.
 
     Returns
     -------
@@ -296,7 +300,7 @@ cpdef Aggregation ewmvar(
         The EWMVAR aggregation.
     """
     return Aggregation.from_libcudf(
-        move(make_ewmvar_aggregation[aggregation](center_of_mass, history))
+        move(make_ewmvar_aggregation[aggregation](center_of_mass, history, bias))
     )
 
 cpdef Aggregation count(null_policy null_handling = null_policy.EXCLUDE):

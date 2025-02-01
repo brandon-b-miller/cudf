@@ -6,6 +6,7 @@ from pylibcudf.libcudf.aggregation cimport (
     aggregation,
     correlation_type,
     ewm_history,
+    ewm_bias,
     groupby_aggregation,
     groupby_scan_aggregation,
     rank_method,
@@ -82,7 +83,7 @@ cpdef Aggregation argmin()
 
 cpdef Aggregation ewma(float center_of_mass, ewm_history history)
 
-cpdef Aggregation ewmvar(float center_of_mass, ewm_history history)
+cpdef Aggregation ewmvar(float center_of_mass, ewm_history history, ewm_bias bias)
 
 cpdef Aggregation nunique(null_policy null_handling = *)
 

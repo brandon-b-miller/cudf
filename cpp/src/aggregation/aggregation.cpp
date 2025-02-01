@@ -740,14 +740,14 @@ template CUDF_EXPORT std::unique_ptr<scan_aggregation> make_ewma_aggregation<sca
 
 /// Factory to create an EWMVAR aggregation
 template <typename Base>
-std::unique_ptr<Base> make_ewmvar_aggregation(double const com, cudf::ewm_history history)
+std::unique_ptr<Base> make_ewmvar_aggregation(double const com, cudf::ewm_history history, cudf::ewm_bias bias)
 {
-  return std::make_unique<detail::ewmvar_aggregation>(com, history);
+  return std::make_unique<detail::ewmvar_aggregation>(com, history, bias);
 }
 template CUDF_EXPORT std::unique_ptr<aggregation> make_ewmvar_aggregation<aggregation>(
-  double const com, cudf::ewm_history history);
+  double const com, cudf::ewm_history history, cudf::ewm_bias bias);
 template CUDF_EXPORT std::unique_ptr<scan_aggregation> make_ewmvar_aggregation<scan_aggregation>(
-  double const com, cudf::ewm_history history);
+  double const com, cudf::ewm_history history, cudf::ewm_bias bias);
 
 /// Factory to create a RANK aggregation
 template <typename Base>

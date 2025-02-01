@@ -718,8 +718,9 @@ class ewmvar_aggregation final : public scan_aggregation {
  public:
   double const center_of_mass;
   cudf::ewm_history history;
+  cudf::ewm_bias bias;
 
-  ewmvar_aggregation(double const center_of_mass, cudf::ewm_history history)
+  ewmvar_aggregation(double const center_of_mass, cudf::ewm_history history, cudf::ewm_bias bias)
     : aggregation{EWMVAR}, center_of_mass{center_of_mass}, history{history}
   {
   }
@@ -739,7 +740,7 @@ class ewmvar_aggregation final : public scan_aggregation {
   {
     if (!this->aggregation::is_equal(_other)) { return false; }
     auto const& other = dynamic_cast<ewmvar_aggregation const&>(_other);
-    return this->center_of_mass == other.center_of_mass and this->history == other.history;
+    return this->center_of_mass == other.center_of_mass and this->history == other.history and this->bias == other.bias;
   }
 
   void finalize(aggregation_finalizer& finalizer) const override { finalizer.visit(*this); }
