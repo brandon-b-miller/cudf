@@ -145,6 +145,19 @@ struct ewma_noadjust_no_nulls_functor : public ewma_functor_base<T> {
   }
 };
 
+//__host__ __device__(double x, double xsqrd) -> double { return xsqrd - x * x; }
+
+template <typename T>
+struct ewmvar_final_functor {
+  T beta;
+  ewm_bias bias;
+  bool adjust;
+  __device__ T operator()(T const x, T const xsqrd)
+  {
+    return xsqrd - x * x;
+  }
+};
+
 /**
 * @brief Return an array whose values y_i are the number of null entries
 * in between the last valid entry of the input and the current index.
@@ -291,9 +304,54 @@ rmm::device_uvector<T> compute_ewma_noadjust(column_view const& input,
   return output;
 }
 
+
+template <typename T>
+rmm::device_uvector<T> compute_ewmvar(column_view const& input,
+                                      T const beta,
+                                      ewm_bias bias,
+                                      ewm_history history,
+                                      rmm::cuda_stream_view stream,
+                                      rmm::device_async_resource_ref mr)
+{
+
+  // get xi**2
+  std::unique_ptr<column> xi_sqr = make_fixed_width_column(
+    cudf::data_type{cudf::type_id::FLOAT64}, input.size(), copy_bitmask(input), input.null_count());
+  mutable_column_view xi_sqr_d = xi_sqr->mutable_view();
+  thrust::transform(rmm::exec_policy(stream),
+                    input.begin<double>(),
+                    input.end<double>(),
+                    xi_sqr_d.begin<double>(),
+                    [=] __host__ __device__(double input) -> double { return input * input; });
+
+  // Lambda to compute the appropriate EWMA based on the history
+  auto compute_ewma = [&] (column_view const& input_data, bool adjust) {
+      return adjust ? compute_ewma_adjust(input_data, beta, stream, mr)
+                    : compute_ewma_noadjust(input_data, beta, stream, mr);
+  };
+
+  // Use the lambda to initialize ewma_xi and ewma_xi_sqr
+  bool adjust = (history == ewm_history::INFINITE);
+
+  rmm::device_uvector<T> ewma_xi = compute_ewma(input, adjust);
+  rmm::device_uvector<T> ewma_xi_sqr = compute_ewma(xi_sqr->view(), adjust);
+
+  thrust::transform(
+      rmm::exec_policy(stream),
+      ewma_xi.begin(),
+      ewma_xi.end(),
+      ewma_xi_sqr.begin(),
+      ewma_xi.begin(),
+      ewmvar_final_functor<T>{beta, bias, adjust});
+
+  return ewma_xi;
+
+}     
+
 template <typename T>
 rmm::device_uvector<T> compute_ewmvar_adjust(column_view const& input,
                                              T const beta,
+                                             ewm_bias bias,
                                              rmm::cuda_stream_view stream,
                                              rmm::device_async_resource_ref mr)
 {
@@ -318,9 +376,10 @@ rmm::device_uvector<T> compute_ewmvar_adjust(column_view const& input,
     ewma_xi.end(),
     ewma_xi_sqr.begin(),
     ewma_xi.begin(),
-    [=] __host__ __device__(double x, double xsqrd) -> double { return xsqrd - x * x; });
+    ewmvar_final_functor<T>{beta, bias, true});
 
   return ewma_xi;
+
 }
 
 
@@ -328,6 +387,7 @@ rmm::device_uvector<T> compute_ewmvar_adjust(column_view const& input,
 template <typename T>
 rmm::device_uvector<T> compute_ewmvar_noadjust(column_view const& input,
                                                T const beta,
+                                               ewm_bias bias,
                                                rmm::cuda_stream_view stream,
                                                rmm::device_async_resource_ref mr)
 {
@@ -352,7 +412,7 @@ rmm::device_uvector<T> compute_ewmvar_noadjust(column_view const& input,
     ewma_xi.end(),
     ewma_xi_sqr.begin(),
     ewma_xi.begin(),
-    [=] __host__ __device__(double x, double xsqrd) -> double { return xsqrd - x * x; });
+    ewmvar_final_functor<T>{beta, bias, false});
 
   return ewma_xi;
 }
@@ -414,19 +474,14 @@ struct ewmvar_functor {
   {
     auto const ewmvar_agg     = dynamic_cast<ewmvar_aggregation const*>(&agg);
     auto const history        = ewmvar_agg->history;
+    auto const bias           = ewmvar_agg->bias;
     auto const center_of_mass = ewmvar_agg->center_of_mass;
 
     // center of mass is easier for the user, but the recurrences are
     // better expressed in terms of the derived parameter `beta`
     T const beta = center_of_mass / (center_of_mass + 1.0);
 
-    auto result = [&]() {
-      if (history == cudf::ewm_history::INFINITE) {
-        return compute_ewmvar_adjust(input, beta, stream, mr);
-      } else {
-        return compute_ewmvar_noadjust(input, beta, stream, mr);
-      }
-    }();
+    auto result = compute_ewmvar(input, beta, bias, history, stream, mr);
     return std::make_unique<column>(cudf::data_type(cudf::type_to_id<T>()),
                                     input.size(),
                                     result.release(),
