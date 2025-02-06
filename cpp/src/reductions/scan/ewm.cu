@@ -31,8 +31,8 @@
 #include <thrust/transform_scan.h>
 
 template <typename T>
-void print_device_uvector(rmm::device_uvector<T>& input_vec) {
-
+void print_device_uvector(rmm::device_uvector<T>& input_vec)
+{
   thrust::device_vector<T> debug_d(input_vec.size());
   thrust::copy(input_vec.begin(), input_vec.end(), debug_d.begin());
   thrust::host_vector<T> debug = debug_d;
@@ -154,7 +154,11 @@ struct ewmvar_final_functor {
   bool adjust;
   __device__ T operator()(T const x, T const xsqrd)
   {
-    return xsqrd - x * x;
+    if (bias == ewm_bias::BIASED) {
+      return xsqrd - x * x;
+    } else {
+      return xsqrd - x * x;
+    }
   }
 };
 
@@ -304,7 +308,6 @@ rmm::device_uvector<T> compute_ewma_noadjust(column_view const& input,
   return output;
 }
 
-
 template <typename T>
 rmm::device_uvector<T> compute_ewmvar(column_view const& input,
                                       T const beta,
@@ -313,7 +316,6 @@ rmm::device_uvector<T> compute_ewmvar(column_view const& input,
                                       rmm::cuda_stream_view stream,
                                       rmm::device_async_resource_ref mr)
 {
-
   // get xi**2
   std::unique_ptr<column> xi_sqr = make_fixed_width_column(
     cudf::data_type{cudf::type_id::FLOAT64}, input.size(), copy_bitmask(input), input.null_count());
@@ -325,94 +327,39 @@ rmm::device_uvector<T> compute_ewmvar(column_view const& input,
                     [=] __host__ __device__(double input) -> double { return input * input; });
 
   // Lambda to compute the appropriate EWMA based on the history
-  auto compute_ewma = [&] (column_view const& input_data, bool adjust) {
-      return adjust ? compute_ewma_adjust(input_data, beta, stream, mr)
-                    : compute_ewma_noadjust(input_data, beta, stream, mr);
+  auto compute_ewma = [&](column_view const& input_data, bool adjust) {
+    return adjust ? compute_ewma_adjust(input_data, beta, stream, mr)
+                  : compute_ewma_noadjust(input_data, beta, stream, mr);
   };
 
   // Use the lambda to initialize ewma_xi and ewma_xi_sqr
   bool adjust = (history == ewm_history::INFINITE);
 
-  rmm::device_uvector<T> ewma_xi = compute_ewma(input, adjust);
+  rmm::device_uvector<T> ewma_xi     = compute_ewma(input, adjust);
   rmm::device_uvector<T> ewma_xi_sqr = compute_ewma(xi_sqr->view(), adjust);
 
-  thrust::transform(
-      rmm::exec_policy(stream),
-      ewma_xi.begin(),
-      ewma_xi.end(),
-      ewma_xi_sqr.begin(),
-      ewma_xi.begin(),
-      ewmvar_final_functor<T>{beta, bias, adjust});
+  // get indices
+  auto device_view = column_device_view::create(input);
 
-  return ewma_xi;
+  auto valid_it = thrust::make_transform_iterator(
+    cudf::detail::make_validity_iterator(*device_view),
+    cuda::proclaim_return_type<int>([] __device__(int valid) -> int { return valid; }));
 
-}     
+  rmm::device_uvector<cudf::size_type> indices(input.size(), stream);
+  thrust::inclusive_scan(rmm::exec_policy(stream),
+                         valid_it,
+                         valid_it + input.size(),
+                         indices.begin(),
+                         thrust::plus<bool>());
 
-template <typename T>
-rmm::device_uvector<T> compute_ewmvar_adjust(column_view const& input,
-                                             T const beta,
-                                             ewm_bias bias,
-                                             rmm::cuda_stream_view stream,
-                                             rmm::device_async_resource_ref mr)
-{
+  print_device_uvector(indices);
 
-  // get xi**2
-  std::unique_ptr<column> xi_sqr = make_fixed_width_column(
-    cudf::data_type{cudf::type_id::FLOAT64}, input.size(), copy_bitmask(input), input.null_count());
-  mutable_column_view xi_sqr_d = xi_sqr->mutable_view();
   thrust::transform(rmm::exec_policy(stream),
-                    input.begin<double>(),
-                    input.end<double>(),
-                    xi_sqr_d.begin<double>(),
-                    [=] __host__ __device__(double input) -> double { return input * input; });
-
-
-  rmm::device_uvector<T> ewma_xi_sqr = compute_ewma_adjust(xi_sqr->view(), beta, stream, mr);
-  rmm::device_uvector<T> ewma_xi = compute_ewma_adjust(input, beta, stream, mr);
-
-  thrust::transform(
-    rmm::exec_policy(stream),
-    ewma_xi.begin(),
-    ewma_xi.end(),
-    ewma_xi_sqr.begin(),
-    ewma_xi.begin(),
-    ewmvar_final_functor<T>{beta, bias, true});
-
-  return ewma_xi;
-
-}
-
-
-
-template <typename T>
-rmm::device_uvector<T> compute_ewmvar_noadjust(column_view const& input,
-                                               T const beta,
-                                               ewm_bias bias,
-                                               rmm::cuda_stream_view stream,
-                                               rmm::device_async_resource_ref mr)
-{
-
-  // get xi**2
-  std::unique_ptr<column> xi_sqr = make_fixed_width_column(
-    cudf::data_type{cudf::type_id::FLOAT64}, input.size(), copy_bitmask(input), input.null_count());
-  mutable_column_view xi_sqr_d = xi_sqr->mutable_view();
-  thrust::transform(rmm::exec_policy(stream),
-                    input.begin<double>(),
-                    input.end<double>(),
-                    xi_sqr_d.begin<double>(),
-                    [=] __host__ __device__(double input) -> double { return input * input; });
-
-
-  rmm::device_uvector<T> ewma_xi_sqr = compute_ewma_noadjust(xi_sqr->view(), beta, stream, mr);
-  rmm::device_uvector<T> ewma_xi = compute_ewma_noadjust(input, beta, stream, mr);
-
-  thrust::transform(
-    rmm::exec_policy(stream),
-    ewma_xi.begin(),
-    ewma_xi.end(),
-    ewma_xi_sqr.begin(),
-    ewma_xi.begin(),
-    ewmvar_final_functor<T>{beta, bias, false});
+                    ewma_xi.begin(),
+                    ewma_xi.end(),
+                    ewma_xi_sqr.begin(),
+                    ewma_xi.begin(),
+                    ewmvar_final_functor<T>{beta, bias, adjust});
 
   return ewma_xi;
 }

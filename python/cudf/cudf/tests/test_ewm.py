@@ -68,8 +68,8 @@ def test_ewma(data, params, adjust):
         {"alpha": 0.5},
     ],
 )
-@pytest.mark.parametrize("adjust", [True, False])
-@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("adjust", [True, False], ids=["adjust", "no_adjust"])
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no_bias"])
 def test_ewmvar(data, params, adjust, bias):
     """
     The most basic test asserts that we obtain
