@@ -216,8 +216,16 @@ class ExponentialMovingWindow(_RollingBase):
         # passing them in.
         to_libcudf_column = source_column.astype("float64").nans_to_nulls()
 
+        kwargs = {
+            "com": self.com,
+            "adjust": self.adjust,
+        }
+
+        if agg_name == "ewmvar":
+            kwargs['bias'] = kwargs.get("bias", False)
+
         return to_libcudf_column.scan(
-            agg_name, True, com=self.com, adjust=self.adjust, bias=kwargs.get("bias", False)
+            agg_name, True, **kwargs
         )
 
 
