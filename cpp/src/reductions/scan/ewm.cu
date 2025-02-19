@@ -145,15 +145,15 @@ struct ewma_noadjust_no_nulls_functor : public ewma_functor_base<T> {
   }
 };
 
-//__host__ __device__(double x, double xsqrd) -> double { return xsqrd - x * x; }
-
 template <typename T>
 struct ewmvar_final_functor {
   T beta;
   ewm_bias bias;
   bool adjust;
-  __device__ T operator()(T const x, T const xsqrd)
+  __device__ T operator()(thrust::tuple<T, T, int> const data)
   {
+    T const beta               = this->beta;
+    auto const [x, xsqrd, idx] = data;
     if (bias == ewm_bias::BIASED) {
       return xsqrd - x * x;
     } else {
@@ -362,10 +362,12 @@ rmm::device_uvector<T> compute_ewmvar(column_view const& input,
 
   print_device_uvector(indices);
 
+  auto data = thrust::make_zip_iterator(
+    thrust::make_tuple(ewma_xi.begin(), ewma_xi_sqr.begin(), indices.begin()));
+
   thrust::transform(rmm::exec_policy(stream),
-                    ewma_xi.begin(),
-                    ewma_xi.end(),
-                    ewma_xi_sqr.begin(),
+                    data,
+                    data + input.size(),
                     ewma_xi.begin(),
                     ewmvar_final_functor<T>{beta, bias, adjust});
 
