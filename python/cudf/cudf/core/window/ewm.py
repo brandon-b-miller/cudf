@@ -225,12 +225,9 @@ class ExponentialMovingWindow(_RollingBase):
         }
 
         if agg_name == "ewmvar":
-            kwargs['bias'] = kwargs.get("bias", False)
+            kwargs["bias"] = kwargs.get("bias", False)
 
-
-        return to_libcudf_column.scan(
-            agg_name, True, **kwargs
-        )
+        return to_libcudf_column.scan(agg_name, True, **kwargs)
 
 
 def get_center_of_mass(

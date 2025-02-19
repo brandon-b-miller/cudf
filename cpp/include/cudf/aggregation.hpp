@@ -256,7 +256,7 @@ enum class udf_type : bool { CUDA, PTX };
 enum class correlation_type : int32_t { PEARSON, KENDALL, SPEARMAN };
 /// Type of treatment of EWM input values' first value
 enum class ewm_history : int32_t { INFINITE, FINITE };
-/// Wether EWM variance or standard deviation should be biased or unbiased
+/// Whether EWM variance or standard deviation should be biased or unbiased
 enum class ewm_bias : int32_t { BIASED, UNBIASED };
 
 /// Factory to create a SUM aggregation
@@ -460,10 +460,13 @@ std::unique_ptr<Base> make_ewma_aggregation(double const center_of_mass, ewm_his
  *
  * @param center_of_mass the center of mass.
  * @param history which assumption to make about the first value
+ * @param bias whether or not to debias the result
  * @return A EWM aggregation object
  */
 template <typename Base = aggregation>
-std::unique_ptr<Base> make_ewmvar_aggregation(double const center_of_mass, ewm_history history, ewm_bias bias);
+std::unique_ptr<Base> make_ewmvar_aggregation(double const center_of_mass,
+                                              ewm_history history,
+                                              ewm_bias bias);
 
 /**
  * @brief Factory to create a RANK aggregation

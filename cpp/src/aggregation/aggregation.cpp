@@ -740,7 +740,9 @@ template CUDF_EXPORT std::unique_ptr<scan_aggregation> make_ewma_aggregation<sca
 
 /// Factory to create an EWMVAR aggregation
 template <typename Base>
-std::unique_ptr<Base> make_ewmvar_aggregation(double const com, cudf::ewm_history history, cudf::ewm_bias bias)
+std::unique_ptr<Base> make_ewmvar_aggregation(double const com,
+                                              cudf::ewm_history history,
+                                              cudf::ewm_bias bias)
 {
   return std::make_unique<detail::ewmvar_aggregation>(com, history, bias);
 }

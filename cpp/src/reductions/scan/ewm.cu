@@ -342,26 +342,23 @@ rmm::device_uvector<T> compute_ewmvar(column_view const& input,
   auto device_view = column_device_view::create(input);
   rmm::device_uvector<cudf::size_type> indices(input.size(), stream);
 
-
-
   if (input.has_nulls()) {
     auto valid_it = thrust::make_transform_iterator(
       cudf::detail::make_validity_iterator(*device_view),
       cuda::proclaim_return_type<int>([] __device__(int valid) -> int { return valid; }));
     thrust::inclusive_scan(rmm::exec_policy(stream),
-                          valid_it,
-                          valid_it + input.size(),
-                          indices.begin(),
-                          thrust::plus<int>());
+                           valid_it,
+                           valid_it + input.size(),
+                           indices.begin(),
+                           thrust::plus<int>());
   } else {
     auto valid_it = thrust::make_counting_iterator<size_type>(0);
     thrust::inclusive_scan(rmm::exec_policy(stream),
-                          valid_it,
-                          valid_it + input.size(),
-                          indices.begin(),
-                          thrust::plus<int>());
+                           valid_it,
+                           valid_it + input.size(),
+                           indices.begin(),
+                           thrust::plus<int>());
   }
-
 
   print_device_uvector(indices);
 

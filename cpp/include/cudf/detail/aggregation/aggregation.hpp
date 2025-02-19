@@ -740,7 +740,8 @@ class ewmvar_aggregation final : public scan_aggregation {
   {
     if (!this->aggregation::is_equal(_other)) { return false; }
     auto const& other = dynamic_cast<ewmvar_aggregation const&>(_other);
-    return this->center_of_mass == other.center_of_mass and this->history == other.history and this->bias == other.bias;
+    return this->center_of_mass == other.center_of_mass and this->history == other.history and
+           this->bias == other.bias;
   }
 
   void finalize(aggregation_finalizer& finalizer) const override { finalizer.visit(*this); }
