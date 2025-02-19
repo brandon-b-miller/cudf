@@ -214,7 +214,10 @@ class ExponentialMovingWindow(_RollingBase):
         # pandas does nans in the same positions mathematically.
         # as such we need to convert the nans to nulls before
         # passing them in.
-        to_libcudf_column = source_column.astype("float64").nans_to_nulls()
+
+        to_libcudf_column = source_column.astype(
+            np.dtype(np.float64)
+        ).nans_to_nulls()
 
         kwargs = {
             "com": self.com,
@@ -223,6 +226,7 @@ class ExponentialMovingWindow(_RollingBase):
 
         if agg_name == "ewmvar":
             kwargs['bias'] = kwargs.get("bias", False)
+
 
         return to_libcudf_column.scan(
             agg_name, True, **kwargs
