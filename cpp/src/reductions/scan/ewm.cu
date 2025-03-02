@@ -31,8 +31,9 @@
 #include <thrust/transform_scan.h>
 
 template <typename T>
-void print_device_uvector(rmm::device_uvector<T>& input_vec)
+void print_device_uvector(rmm::device_uvector<T>& input_vec, std::string const& msg)
 {
+  std::cout << msg << ":\n";
   thrust::device_vector<T> debug_d(input_vec.size());
   thrust::copy(input_vec.begin(), input_vec.end(), debug_d.begin());
   thrust::host_vector<T> debug = debug_d;
@@ -153,11 +154,30 @@ struct ewmvar_final_functor {
   __device__ T operator()(thrust::tuple<T, T, int> const data)
   {
     T const beta               = this->beta;
+    T bias_factor              = 1;
     auto const [x, xsqrd, idx] = data;
+
     if (bias == ewm_bias::BIASED) {
       return xsqrd - x * x;
     } else {
-      return xsqrd - x * x;
+      if (adjust) {
+      } else {
+      }
+      return (xsqrd - x * x) / bias_factor;
+    }
+  }
+};
+
+template <typename T>
+struct compute_bias_functor : public ewma_functor_base<T> {
+  __device__ pair_type<T> operator()(thrust::tuple<bool, size_type> const data)
+  {
+    auto [valid, nullcnt] = data;
+    T const beta          = this->beta;
+    if (!valid) {
+      return this->IDENTITY;
+    } else {
+      return {pow(beta, nullcnt), 1.0};
     }
   }
 };
@@ -185,6 +205,44 @@ rmm::device_uvector<cudf::size_type> null_roll_up(column_view const& input,
                                 invalid_it,
                                 std::next(output.begin()));
   return output;
+}
+
+/**
+ * @brief TODO
+ * In general the bias of a weigted variance is a function
+ * of the sum of the weights used and their squrees. However
+ * when nulls are present, certain weights are not included
+ * because the sample itself is not included
+ */
+template <typename T>
+rmm::device_uvector<T> make_bias_factors(column_view const& input,
+                                         bool adjust,
+                                         T const beta,
+                                         rmm::cuda_stream_view stream)
+{
+  rmm::device_uvector<T> bias_factors(input.size(), stream);
+  auto device_view = column_device_view::create(input);
+  auto valid_it    = cudf::detail::make_validity_iterator(*device_view);
+  auto nullcnt     = null_roll_up(input, stream);
+  print_device_uvector(nullcnt, "makebiasfactors");
+  rmm::device_uvector<pair_type<T>> pairs(input.size(), stream);
+
+  auto data = thrust::make_zip_iterator(thrust::make_tuple(valid_it, nullcnt.begin()));
+
+  thrust::transform_inclusive_scan(rmm::exec_policy(stream),
+                                   data,
+                                   data + input.size(),
+                                   pairs.begin(),
+                                   compute_bias_functor<T>{beta},
+                                   recurrence_functor<T>{});
+
+  thrust::transform(rmm::exec_policy(stream),
+                    pairs.begin(),
+                    pairs.end(),
+                    bias_factors.begin(),
+                    [] __device__(pair_type<T> pair) -> T { return pair.second; });
+
+  return bias_factors;
 }
 
 template <typename T>
@@ -360,11 +418,13 @@ rmm::device_uvector<T> compute_ewmvar(column_view const& input,
                            thrust::plus<int>());
   }
 
-  print_device_uvector(indices);
+  // print_device_uvector(indices);
 
   auto data = thrust::make_zip_iterator(
     thrust::make_tuple(ewma_xi.begin(), ewma_xi_sqr.begin(), indices.begin()));
 
+  auto bias_factor = make_bias_factors(input, adjust, beta, stream);
+  print_device_uvector(bias_factor, "bias_factor");
   thrust::transform(rmm::exec_policy(stream),
                     data,
                     data + input.size(),
