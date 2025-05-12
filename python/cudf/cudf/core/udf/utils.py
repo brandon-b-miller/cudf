@@ -14,6 +14,7 @@ from numba import cuda, typeof
 from numba.core.datamodel import default_manager, models
 from numba.core.errors import TypingError
 from numba.core.extending import register_model
+from numba.cuda.cudadrv.linkable_code import PTXSource
 from numba.np import numpy_support
 from numba.types import (
     CPointer,
@@ -79,12 +80,15 @@ launch_arg_getters: dict[Any, Any] = {}
 
 @functools.cache
 def _ptx_file():
-    return _get_ptx_file(
+    path = _get_ptx_file(
         os.path.join(
             os.path.dirname(strings_udf.__file__), "..", "core", "udf"
         ),
         "shim_",
     )
+    with open(path, "rb") as f:
+        ptxlib = PTXSource(f.read(), nrt=True)
+    return ptxlib
 
 
 @_performance_tracking
