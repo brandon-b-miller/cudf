@@ -3,12 +3,12 @@
 from cudf.utils.performance_tracking import _performance_tracking
 from cudf.api.types import is_scalar
 from cudf.core.udf.utils import (
-    _generate_cache_key, 
-    precompiled as kernel_cache, 
-    _ptx_file, 
-    str_view_arg_handler, 
-    _CUDFNumbaConfig, 
-    _supported_cols_from_frame, 
+    _generate_cache_key,
+    precompiled as kernel_cache,
+    _ptx_file,
+    str_view_arg_handler,
+    _CUDFNumbaConfig,
+    _supported_cols_from_frame,
     _masked_array_type_from_col
 )
 from numba.np import numpy_support
@@ -27,7 +27,7 @@ import numpy as np
 class ApplyKernelBase:
     """
     Base class for kernels computing the result of `.apply`
-    operations on Series or DataFrame objects. 
+    operations on Series or DataFrame objects.
     """
 
     def __init__(self, frame, func, args):
@@ -52,7 +52,7 @@ class ApplyKernelBase:
 
     def _get_kernel_string(self):
         raise NotImplementedError
-    
+
     def _construct_signature(self, return_type):
         """
         Build the signature of numba types that will be used to
@@ -75,7 +75,7 @@ class ApplyKernelBase:
         sig = void(*(sig + offsets + [typeof(arg) for arg in self.args]))
 
         return sig
-    
+
 
     @_performance_tracking
     def _get_udf_return_type(self):
@@ -144,8 +144,8 @@ class ApplyKernelBase:
         ctx = nrt_enabled() if nrt else nullcontext()
         with ctx:
             kernel = cuda.jit(
-                self.sig, 
-                link=[_ptx_file()], 
+                self.sig,
+                link=[_ptx_file()],
                 extensions=[str_view_arg_handler]
             )(_kernel)
         return kernel
@@ -164,9 +164,9 @@ class ApplyKernelBase:
         """
 
         cache_key = _generate_cache_key(
-            self.frame, 
-            self.func, 
-            self.args, 
+            self.frame,
+            self.func,
+            self.args,
             suffix=self.kernel_type
         )
 
@@ -184,4 +184,3 @@ class ApplyKernelBase:
 
         kernel_cache[cache_key] = (kernel, np_return_type)
         return kernel, np_return_type
-

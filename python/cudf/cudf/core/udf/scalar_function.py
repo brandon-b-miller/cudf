@@ -82,7 +82,7 @@ class SeriesApplyKernel(ApplyKernelBase):
 
     def _get_frame_type(self):
         return MaskedType(
-            string_view if self.frame.dtype == "O" 
+            string_view if self.frame.dtype == "O"
             else numpy_support.from_dtype(self.frame.dtype)
         )
 
@@ -93,7 +93,7 @@ class SeriesApplyKernel(ApplyKernelBase):
         return _scalar_kernel_string_from_template(
             self.frame, self.args
         )
-    
+
     def _get_kernel_string_exec_context(self):
         # This is the global execution context that will be used
         # to compile the kernel. It contains the function being

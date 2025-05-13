@@ -3536,12 +3536,12 @@ class IndexedFrame(Frame):
 
     @acquire_spill_lock()
     @_performance_tracking
-    def _apply(self, func, kernel_getter, *args, **kwargs):
+    def _apply(self, func, kernel_class, *args, **kwargs):
         """Apply `func` across the rows of the frame."""
         if kwargs:
             raise ValueError("UDFs using **kwargs are not yet supported.")
         try:
-            kr = SeriesApplyKernel(self, func, args)
+            kr = kernel_class(self, func, args)
             kernel, retty = kr.get_kernel()
 
         except Exception as e:
