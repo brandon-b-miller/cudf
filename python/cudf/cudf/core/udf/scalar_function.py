@@ -1,10 +1,11 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
+# Copyright (c) 2020-2025, NVIDIA CORPORATION.
 
 from numba import cuda
 from numba.np import numpy_support
 
 from cudf.core.udf.api import Masked, pack_return
 from cudf.core.udf.masked_typing import MaskedType
+from cudf.core.udf.nrt_utils import NRTContext
 from cudf.core.udf.strings_typing import string_view
 from cudf.core.udf.templates import (
     masked_input_initializer_template,
@@ -52,7 +53,10 @@ def _get_scalar_kernel(sr, func, args):
     sr_type = MaskedType(
         string_view if sr.dtype == "O" else numpy_support.from_dtype(sr.dtype)
     )
-    scalar_return_type = _get_udf_return_type(sr_type, func, args)
+
+    nrtctx = NRTContext()
+    with nrtctx:
+        scalar_return_type = _get_udf_return_type(sr_type, func, args)
 
     sig = _construct_signature(sr, scalar_return_type, args=args)
     f_ = cuda.jit(device=True)(func)
@@ -64,6 +68,8 @@ def _get_scalar_kernel(sr, func, args):
         "pack_return": pack_return,
     }
     kernel_string = _scalar_kernel_string_from_template(sr, args=args)
-    kernel = _get_kernel(kernel_string, global_exec_context, sig, func)
+    kernel = _get_kernel(
+        kernel_string, global_exec_context, sig, func, nrt=nrtctx.use_nrt
+    )
 
     return kernel, scalar_return_type

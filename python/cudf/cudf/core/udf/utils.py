@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import functools
 import os
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import cachetools
@@ -10,7 +11,7 @@ import cupy as cp
 import llvmlite.binding as ll
 import numpy as np
 from cuda.bindings import runtime
-from numba import cuda, typeof
+from numba import config as numba_config, cuda, typeof
 from numba.core.datamodel import default_manager, models
 from numba.core.errors import TypingError
 from numba.core.extending import register_model
@@ -302,15 +303,21 @@ def _compile_or_get(
     return kernel, np_return_type
 
 
-def _get_kernel(kernel_string, globals_, sig, func):
+def _get_kernel(kernel_string, globals_, sig, func, nrt=False):
     """Template kernel compilation helper function."""
     f_ = cuda.jit(device=True)(func)
     globals_["f_"] = f_
     exec(kernel_string, globals_)
     _kernel = globals_["_kernel"]
-    kernel = cuda.jit(
-        sig, link=[_ptx_file()], extensions=[str_view_arg_handler]
-    )(_kernel)
+    if nrt:
+        with nrt_enabled():
+            kernel = cuda.jit(
+                sig, link=[_ptx_file()], extensions=[str_view_arg_handler]
+            )(_kernel)
+    else:
+        kernel = cuda.jit(
+            sig, link=[_ptx_file()], extensions=[str_view_arg_handler]
+        )(_kernel)
 
     return kernel
 
@@ -349,16 +356,18 @@ def _post_process_output_col(col, retty):
         result = ColumnBase.from_pylibcudf(
             strings_udf.column_from_managed_udf_string_array(col)
         )
+        # If we're freeing managed strings, NRT is definitely needed
+        with nrt_enabled():
 
-        @cuda.jit(
-            void(CPointer(managed_udf_string), int64),
-            link=[_ptx_file()],
-            extensions=[str_view_arg_handler],
-        )
-        def free_managed_udf_string_array(ary, size):
-            gid = cuda.grid(1)
-            if gid < size:
-                NRT_decref(ary[gid])
+            @cuda.jit(
+                void(CPointer(managed_udf_string), int64),
+                link=[_ptx_file()],
+                extensions=[str_view_arg_handler],
+            )
+            def free_managed_udf_string_array(ary, size):
+                gid = cuda.grid(1)
+                if gid < size:
+                    NRT_decref(ary[gid])
 
         with _CUDFNumbaConfig():
             free_managed_udf_string_array.forall(result.size)(col, result.size)
@@ -427,3 +436,13 @@ def column_to_string_view_array_init_heap(col: plc.Column) -> Buffer:
 
 class UDFError(RuntimeError):
     pass
+
+
+@contextmanager
+def nrt_enabled():
+    original_value = numba_config.CUDA_ENABLE_NRT
+    numba_config.CUDA_ENABLE_NRT = True
+    try:
+        yield
+    finally:
+        numba_config.CUDA_ENABLE_NRT = original_value

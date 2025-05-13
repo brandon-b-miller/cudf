@@ -28,6 +28,7 @@ from cudf.core.udf._ops import (
     comparison_ops,
     unary_ops,
 )
+from cudf.core.udf.nrt_utils import _current_nrt_context
 from cudf.core.udf.strings_typing import (
     ManagedUDFString,
     StringView,
@@ -111,6 +112,12 @@ class MaskedType(types.Type):
         # MaskedType in Numba shall be parameterized
         # with a value type
         self.value_type = _type_to_masked_type(value)
+        if self.value_type == managed_udf_string:
+            ctx = _current_nrt_context.get(None)
+            if ctx is not None:
+                # we're in a compilation that is determining
+                # if NRT must be linked
+                ctx.use_nrt = True
         super().__init__(name=f"Masked({self.value_type})")
 
     def __hash__(self):
