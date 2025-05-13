@@ -73,3 +73,34 @@ def _get_scalar_kernel(sr, func, args):
     )
 
     return kernel, scalar_return_type
+
+from cudf.core.udf.udf_kernel_base import ApplyKernelBase
+class SeriesApplyKernel(ApplyKernelBase):
+    @property
+    def kernel_type(self):
+        return "series_apply"
+
+    def _get_frame_type(self):
+        return MaskedType(
+            string_view if self.frame.dtype == "O" 
+            else numpy_support.from_dtype(self.frame.dtype)
+        )
+
+    def _get_kernel_string(self):
+        # This is the kernel string that will be compiled
+        # It is generated from the template in templates.py
+        # and is specific to the function being compiled
+        return _scalar_kernel_string_from_template(
+            self.frame, self.args
+        )
+    
+    def _get_kernel_string_exec_context(self):
+        # This is the global execution context that will be used
+        # to compile the kernel. It contains the function being
+        # compiled and the cuda module.
+        return {
+            "cuda": cuda,
+            "Masked": Masked,
+            "_mask_get": _mask_get,
+            "pack_return": pack_return,
+        }

@@ -42,6 +42,7 @@ from cudf.core.column import (
     as_column,
     column_empty,
 )
+from cudf.core.udf.scalar_function import SeriesApplyKernel
 from cudf.core.column_accessor import ColumnAccessor
 from cudf.core.common import pipe
 from cudf.core.copy_types import BooleanMask, GatherMap
@@ -3540,9 +3541,9 @@ class IndexedFrame(Frame):
         if kwargs:
             raise ValueError("UDFs using **kwargs are not yet supported.")
         try:
-            kernel, retty = _compile_or_get(
-                self, func, args, kernel_getter=kernel_getter
-            )
+            kr = SeriesApplyKernel(self, func, args)
+            kernel, retty = kr.get_kernel()
+
         except Exception as e:
             raise ValueError(
                 "user defined function compilation failed."
