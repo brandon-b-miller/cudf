@@ -5,17 +5,14 @@ from numba.np import numpy_support
 
 from cudf.core.udf.api import Masked, pack_return
 from cudf.core.udf.masked_typing import MaskedType
-from cudf.core.udf.nrt_utils import NRTContext
 from cudf.core.udf.strings_typing import string_view
 from cudf.core.udf.templates import (
     masked_input_initializer_template,
     scalar_kernel_template,
     unmasked_input_initializer_template,
 )
+from cudf.core.udf.udf_kernel_base import ApplyKernelBase
 from cudf.core.udf.utils import (
-    _construct_signature,
-    _get_kernel,
-    _get_udf_return_type,
     _mask_get,
 )
 
@@ -49,32 +46,6 @@ def _scalar_kernel_string_from_template(sr, args):
     )
 
 
-def _get_scalar_kernel(sr, func, args):
-    sr_type = MaskedType(
-        string_view if sr.dtype == "O" else numpy_support.from_dtype(sr.dtype)
-    )
-
-    nrtctx = NRTContext()
-    with nrtctx:
-        scalar_return_type = _get_udf_return_type(sr_type, func, args)
-
-    sig = _construct_signature(sr, scalar_return_type, args=args)
-    f_ = cuda.jit(device=True)(func)
-    global_exec_context = {
-        "f_": f_,
-        "cuda": cuda,
-        "Masked": Masked,
-        "_mask_get": _mask_get,
-        "pack_return": pack_return,
-    }
-    kernel_string = _scalar_kernel_string_from_template(sr, args=args)
-    kernel = _get_kernel(
-        kernel_string, global_exec_context, sig, func, nrt=nrtctx.use_nrt
-    )
-
-    return kernel, scalar_return_type
-
-from cudf.core.udf.udf_kernel_base import ApplyKernelBase
 class SeriesApplyKernel(ApplyKernelBase):
     @property
     def kernel_type(self):
@@ -82,7 +53,8 @@ class SeriesApplyKernel(ApplyKernelBase):
 
     def _get_frame_type(self):
         return MaskedType(
-            string_view if self.frame.dtype == "O"
+            string_view
+            if self.frame.dtype == "O"
             else numpy_support.from_dtype(self.frame.dtype)
         )
 
@@ -90,9 +62,7 @@ class SeriesApplyKernel(ApplyKernelBase):
         # This is the kernel string that will be compiled
         # It is generated from the template in templates.py
         # and is specific to the function being compiled
-        return _scalar_kernel_string_from_template(
-            self.frame, self.args
-        )
+        return _scalar_kernel_string_from_template(self.frame, self.args)
 
     def _get_kernel_string_exec_context(self):
         # This is the global execution context that will be used

@@ -42,7 +42,6 @@ from cudf.core.column import (
     as_column,
     column_empty,
 )
-from cudf.core.udf.scalar_function import SeriesApplyKernel
 from cudf.core.column_accessor import ColumnAccessor
 from cudf.core.common import pipe
 from cudf.core.copy_types import BooleanMask, GatherMap
@@ -55,7 +54,6 @@ from cudf.core.multiindex import MultiIndex
 from cudf.core.resample import _Resampler
 from cudf.core.scalar import pa_scalar_to_plc_scalar
 from cudf.core.udf.utils import (
-    _compile_or_get,
     _get_input_args_from_frame,
     _post_process_output_col,
     _return_arr_from_dtype,
