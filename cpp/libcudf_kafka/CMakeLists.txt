@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (c) 2018-2023, NVIDIA CORPORATION.
+# Copyright (c) 2018-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
 # in compliance with the License. You may obtain a copy of the License at
@@ -11,9 +11,9 @@
 # or implied. See the License for the specific language governing permissions and limitations under
 # the License.
 # =============================================================================
-cmake_minimum_required(VERSION 3.26.4 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.30.4 FATAL_ERROR)
 
-include(../../fetch_rapids.cmake)
+include(../../cmake/rapids_config.cmake)
 include(rapids-cmake)
 include(rapids-cpm)
 include(rapids-cuda)
@@ -21,13 +21,18 @@ include(rapids-export)
 include(rapids-find)
 
 project(
-  CUDA_KAFKA
-  VERSION 23.08.00
+  CUDF_KAFKA
+  VERSION "${RAPIDS_VERSION}"
   LANGUAGES CXX
 )
 
 # Set a default build type if none was specified
 rapids_cmake_build_type(Release)
+
+# For now, disable CMake's automatic module scanning for C++ files. There is an sccache bug in the
+# version RAPIDS uses in CI that causes it to handle the resulting -M* flags incorrectly with
+# gcc>=14. We can remove this once we upgrade to a newer sccache version.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # ##################################################################################################
 # * conda environment -----------------------------------------------------------------------------
@@ -64,7 +69,7 @@ add_library(cudf_kafka SHARED src/kafka_consumer.cpp src/kafka_callback.cpp)
 # ##################################################################################################
 # * include paths ---------------------------------------------------------------------------------
 target_include_directories(
-  cudf_kafka PUBLIC "$<BUILD_INTERFACE:${CUDA_KAFKA_SOURCE_DIR}/include>"
+  cudf_kafka PUBLIC "$<BUILD_INTERFACE:${CUDF_KAFKA_SOURCE_DIR}/include>"
                     "$<INSTALL_INTERFACE:include>"
 )
 
@@ -81,9 +86,11 @@ set_target_properties(
   cudf_kafka
   PROPERTIES BUILD_RPATH "\$ORIGIN"
              INSTALL_RPATH "\$ORIGIN" # set target compile options
-             CXX_STANDARD 17
+             CXX_STANDARD 20
              CXX_STANDARD_REQUIRED ON
 )
+
+add_library(cudf_kafka::cudf_kafka ALIAS cudf_kafka)
 
 # ##################################################################################################
 # * cudf_kafka Install ----------------------------------------------------------------------------
@@ -94,7 +101,7 @@ install(
   EXPORT cudf_kafka-exports
 )
 
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include DESTINATION include)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 rapids_export(
   INSTALL cudf_kafka

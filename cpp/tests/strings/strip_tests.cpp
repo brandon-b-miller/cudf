@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2023, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2024, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -92,8 +92,8 @@ TEST_F(StringsStripTest, StripBoth)
 
 TEST_F(StringsStripTest, EmptyStringsColumn)
 {
-  cudf::column_view zero_size_strings_column(
-    cudf::data_type{cudf::type_id::STRING}, 0, nullptr, nullptr, 0);
+  auto const zero_size_strings_column = cudf::make_empty_column(cudf::type_id::STRING)->view();
+
   auto strings_view = cudf::strings_column_view(zero_size_strings_column);
   auto results      = cudf::strings::strip(strings_view);
   auto view         = results->view();
@@ -102,7 +102,8 @@ TEST_F(StringsStripTest, EmptyStringsColumn)
 
 TEST_F(StringsStripTest, AllEmptyStrings)
 {
-  auto input = cudf::test::strings_column_wrapper({"", "", "", "", "", ""}, {1, 1, 0, 1, 1});
+  auto input =
+    cudf::test::strings_column_wrapper({"", "", "", "", "", ""}, {true, true, false, true, true});
   auto results =
     cudf::strings::strip(cudf::strings_column_view(input), cudf::strings::side_type::BOTH);
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(*results, input);

@@ -1,24 +1,12 @@
 #!/bin/bash
-# Copyright (c) 2023, NVIDIA CORPORATION.
+# Copyright (c) 2023-2025, NVIDIA CORPORATION.
 
 set -euo pipefail
 
-source rapids-configure-sccache
-source rapids-date-string
+source rapids-init-pip
 
-# Use gha-tools rapids-pip-wheel-version to generate wheel version then
-# update the necessary files
-version_override="$(rapids-pip-wheel-version ${RAPIDS_DATE_STRING})"
+package_dir="python/dask_cudf"
 
-RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen ${RAPIDS_CUDA_VERSION})"
-
-ci/release/apply_wheel_modifications.sh ${version_override} "-${RAPIDS_PY_CUDA_SUFFIX}"
-echo "The package name and/or version was modified in the package source. The git diff is:"
-git diff
-
-cd python/dask_cudf
-
-# Hardcode the output dir
-python -m pip wheel . -w dist -vvv --no-deps --disable-pip-version-check
-
-RAPIDS_PY_WHEEL_NAME="dask_cudf_${RAPIDS_PY_CUDA_SUFFIX}" rapids-upload-wheels-to-s3 dist
+./ci/build_wheel.sh dask-cudf ${package_dir}
+cp "${package_dir}/dist"/* "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}/"
+./ci/validate_wheel.sh "${package_dir}" "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"

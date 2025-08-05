@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2024, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include <benchmarks/common/generate_input.hpp>
 
 #include <cudf/lists/set_operations.hpp>
+#include <cudf/utilities/memory_resource.hpp>
 
 #include <nvbench/nvbench.cuh>
 
@@ -54,7 +55,8 @@ void nvbench_set_op(nvbench::state& state, BenchFuncPtr bfunc)
           cudf::lists_column_view{*rhs},
           cudf::null_equality::EQUAL,
           cudf::nan_equality::ALL_EQUAL,
-          rmm::mr::get_current_device_resource());
+          cudf::get_default_stream(),
+          cudf::get_current_device_resource_ref());
   });
 }
 

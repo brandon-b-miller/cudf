@@ -1,9 +1,9 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.
+# Copyright (c) 2023-2024, NVIDIA CORPORATION.
 import pandas as pd
 import pytest
 
 import cudf
-from cudf.testing._utils import assert_eq
+from cudf.testing import assert_eq
 
 
 @pytest.mark.parametrize(
@@ -26,8 +26,22 @@ def test_convert_dtypes(data, dtype):
 
     # because we don't have distinct nullable types, we check that we
     # get the same result if we convert to nullable pandas types:
-    got = gs.convert_dtypes().to_pandas(nullable=True)
+    nullable = dtype not in ("category", "datetime64[ns]")
+    got = gs.convert_dtypes().to_pandas(nullable=nullable)
     assert_eq(expect, got)
+
+
+def test_convert_integer_false_convert_floating_true():
+    data = [1.000000000000000000000000001, 1]
+    expected = pd.Series(data).convert_dtypes(
+        convert_integer=False, convert_floating=True
+    )
+    result = (
+        cudf.Series(data)
+        .convert_dtypes(convert_integer=False, convert_floating=True)
+        .to_pandas(nullable=True)
+    )
+    assert_eq(result, expected)
 
 
 # Now write the same test, but construct a DataFrame

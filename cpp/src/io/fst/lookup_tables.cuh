@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023, NVIDIA CORPORATION.
+ * Copyright (c) 2022-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@
 
 #pragma once
 
+#include "io/fst/device_dfa.cuh"
+#include "io/utilities/hostdevice_vector.hpp"
+
 #include <cudf/types.hpp>
-#include <io/fst/device_dfa.cuh>
-#include <io/utilities/hostdevice_vector.hpp>
 
 #include <cub/cub.cuh>
-
 #include <cuda/std/iterator>
 
 #include <algorithm>
@@ -104,7 +104,7 @@ class SingleSymbolSmemLUT {
     SymbolGroupIdT no_match_id = symbol_strings.size();
 
     // The symbol with the largest value that is mapped to a symbol group id
-    SymbolGroupIdT max_base_match_val = 0;
+    SymbolGroupIdT max_lookup_index = 0;
 
     // Initialize all entries: by default we return the no-match-id
     std::fill(&init_data.sym_to_sgid[0], &init_data.sym_to_sgid[NUM_ENTRIES_PER_LUT], no_match_id);
@@ -115,17 +115,19 @@ class SingleSymbolSmemLUT {
     for (auto const& sg_symbols : symbol_strings) {
       // Iterate over all symbols that belong to the current symbol group
       for (auto const& sg_symbol : sg_symbols) {
-        max_base_match_val = std::max(max_base_match_val, static_cast<SymbolGroupIdT>(sg_symbol));
+        max_lookup_index = std::max(max_lookup_index, static_cast<SymbolGroupIdT>(sg_symbol));
         init_data.sym_to_sgid[static_cast<int32_t>(sg_symbol)] = sg_id;
       }
       sg_id++;
     }
 
-    // Initialize the out-of-bounds lookup: sym_to_sgid[max_base_match_val+1] -> no_match_id
-    init_data.sym_to_sgid[max_base_match_val + 1] = no_match_id;
+    // Initialize the out-of-bounds lookup: sym_to_sgid[max_lookup_index+1] -> no_match_id
+    auto const oob_match_index             = max_lookup_index + 1;
+    init_data.sym_to_sgid[oob_match_index] = no_match_id;
 
-    // Alias memory / return memory requirements
-    init_data.num_valid_entries = max_base_match_val + 1;
+    // The number of valid entries in the table (including the entry for the out-of-bounds symbol
+    // group id)
+    init_data.num_valid_entries = oob_match_index + 1;
     init_data.pre_map_op        = pre_map_op;
 
     return init_data;
@@ -178,6 +180,74 @@ class SingleSymbolSmemLUT {
       .sym_to_sgid[min(static_cast<SymbolGroupIdT>(symbol), num_valid_entries - 1U)];
   }
 };
+
+/**
+ * @brief A simple symbol group lookup wrapper that uses a simple function object to
+ * retrieve the symbol group id for a symbol.
+ *
+ * @tparam SymbolGroupLookupOpT The function object type to return the symbol group for a given
+ * symbol
+ */
+template <typename SymbolGroupLookupOpT>
+class SymbolGroupLookupOp {
+ private:
+  struct _TempStorage {};
+
+ public:
+  using TempStorage = cub::Uninitialized<_TempStorage>;
+
+  struct KernelParameter {
+    // Declare the member type that the DFA is going to instantiate
+    using LookupTableT = SymbolGroupLookupOp<SymbolGroupLookupOpT>;
+    SymbolGroupLookupOpT sgid_lookup_op;
+  };
+
+  static KernelParameter InitDeviceSymbolGroupIdLut(SymbolGroupLookupOpT sgid_lookup_op)
+  {
+    return KernelParameter{sgid_lookup_op};
+  }
+
+ private:
+  _TempStorage& temp_storage;
+  SymbolGroupLookupOpT sgid_lookup_op;
+
+  __device__ __forceinline__ _TempStorage& PrivateStorage()
+  {
+    __shared__ _TempStorage private_storage;
+    return private_storage;
+  }
+
+ public:
+  CUDF_HOST_DEVICE SymbolGroupLookupOp(KernelParameter const& kernel_param,
+                                       TempStorage& temp_storage)
+    : temp_storage(temp_storage.Alias()), sgid_lookup_op(kernel_param.sgid_lookup_op)
+  {
+  }
+
+  template <typename SymbolT_>
+  constexpr CUDF_HOST_DEVICE int32_t operator()(SymbolT_ const symbol) const
+  {
+    // Look up the symbol group for given symbol
+    return sgid_lookup_op(symbol);
+  }
+};
+
+/**
+ * @brief Prepares a simple symbol group lookup wrapper that uses a simple function object to
+ * retrieve the symbol group id for a symbol.
+ *
+ * @tparam FunctorT A function object type that must implement the signature `int32_t
+ * operator()(symbol)`, where `symbol` is a symbol from the input type.
+ * @param sgid_lookup_op A function object that must implement the signature `int32_t
+ * operator()(symbol)`, where `symbol` is a symbol from the input type.
+ * @return The kernel parameter of type SymbolGroupLookupOp::KernelParameter that is used to
+ * initialize a simple symbol group id lookup wrapper
+ */
+template <typename FunctorT>
+auto make_symbol_group_lookup_op(FunctorT sgid_lookup_op)
+{
+  return SymbolGroupLookupOp<FunctorT>::InitDeviceSymbolGroupIdLut(sgid_lookup_op);
+}
 
 /**
  * @brief Creates a symbol group lookup table of type `SingleSymbolSmemLUT` that uses a two-staged
@@ -297,18 +367,18 @@ class TransitionTable {
 
   template <typename StateIdT>
   static KernelParameter InitDeviceTransitionTable(
-    std::array<std::array<StateIdT, MAX_NUM_SYMBOLS>, MAX_NUM_STATES> const& translation_table)
+    std::array<std::array<StateIdT, MAX_NUM_SYMBOLS>, MAX_NUM_STATES> const& transition_table)
   {
     KernelParameter init_data{};
-    // translation_table[state][symbol] -> new state
-    for (std::size_t state = 0; state < translation_table.size(); ++state) {
-      for (std::size_t symbol = 0; symbol < translation_table[state].size(); ++symbol) {
+    // transition_table[state][symbol] -> new state
+    for (std::size_t state = 0; state < transition_table.size(); ++state) {
+      for (std::size_t symbol = 0; symbol < transition_table[state].size(); ++symbol) {
         CUDF_EXPECTS(
-          static_cast<int64_t>(translation_table[state][symbol]) <=
+          static_cast<int64_t>(transition_table[state][symbol]) <=
             std::numeric_limits<ItemT>::max(),
           "Target state index value exceeds value representable by the transition table's type");
         init_data.transitions[symbol * MAX_NUM_STATES + state] =
-          static_cast<ItemT>(translation_table[state][symbol]);
+          static_cast<ItemT>(transition_table[state][symbol]);
       }
     }
 
@@ -424,12 +494,16 @@ class dfa_device_view {
   // This is a value queried by the DFA simulation algorithm
   static constexpr int32_t MAX_NUM_STATES = NUM_STATES;
 
+  using OutSymbolT                            = typename TranslationTableT::OutSymbolT;
+  static constexpr int32_t MIN_TRANSLATED_OUT = TranslationTableT::MIN_TRANSLATED_OUT;
+  static constexpr int32_t MAX_TRANSLATED_OUT = TranslationTableT::MAX_TRANSLATED_OUT;
+
   using SymbolGroupStorageT      = std::conditional_t<is_complex_op<SymbolGroupIdLookupT>::value,
-                                                 typename SymbolGroupIdLookupT::TempStorage,
-                                                 typename cub::NullType>;
+                                                      typename SymbolGroupIdLookupT::TempStorage,
+                                                      typename cub::NullType>;
   using TransitionTableStorageT  = std::conditional_t<is_complex_op<TransitionTableT>::value,
-                                                     typename TransitionTableT::TempStorage,
-                                                     typename cub::NullType>;
+                                                      typename TransitionTableT::TempStorage,
+                                                      typename cub::NullType>;
   using TranslationTableStorageT = std::conditional_t<is_complex_op<TranslationTableT>::value,
                                                       typename TranslationTableT::TempStorage,
                                                       typename cub::NullType>;
@@ -472,24 +546,33 @@ class dfa_device_view {
  * @tparam OutSymbolT The symbol type being output
  * @tparam OutSymbolOffsetT Type sufficiently large to index into the lookup table of output
  * symbols
- * @tparam MAX_NUM_SYMBOLS The maximum number of symbols being output by a single state transition
+ * @tparam MAX_NUM_SYMBOLS The maximum number of symbol groups supported by this lookup table
  * @tparam MAX_NUM_STATES The maximum number of states that this lookup table shall support
+ * @tparam MIN_TRANSLATED_OUT_ The minimum number of symbols being output by a single state
+ * transition
+ * @tparam MAX_TRANSLATED_OUT_ The maximum number of symbols being output by a single state
+ * transition
  * @tparam MAX_TABLE_SIZE The maximum number of items in the lookup table of output symbols
- * be used.
  */
-template <typename OutSymbolT,
+template <typename OutSymbolT_,
           typename OutSymbolOffsetT,
           int32_t MAX_NUM_SYMBOLS,
           int32_t MAX_NUM_STATES,
+          int32_t MIN_TRANSLATED_OUT_,
+          int32_t MAX_TRANSLATED_OUT_,
           int32_t MAX_TABLE_SIZE = (MAX_NUM_SYMBOLS * MAX_NUM_STATES)>
 class TransducerLookupTable {
  private:
   struct _TempStorage {
     OutSymbolOffsetT out_offset[MAX_NUM_STATES * MAX_NUM_SYMBOLS + 1];
-    OutSymbolT out_symbols[MAX_TABLE_SIZE];
+    OutSymbolT_ out_symbols[MAX_TABLE_SIZE];
   };
 
  public:
+  using OutSymbolT                            = OutSymbolT_;
+  static constexpr int32_t MIN_TRANSLATED_OUT = MIN_TRANSLATED_OUT_;
+  static constexpr int32_t MAX_TRANSLATED_OUT = MAX_TRANSLATED_OUT_;
+
   using TempStorage = cub::Uninitialized<_TempStorage>;
 
   struct KernelParameter {
@@ -497,6 +580,8 @@ class TransducerLookupTable {
                                                OutSymbolOffsetT,
                                                MAX_NUM_SYMBOLS,
                                                MAX_NUM_STATES,
+                                               MIN_TRANSLATED_OUT,
+                                               MAX_TRANSLATED_OUT,
                                                MAX_TABLE_SIZE>;
 
     OutSymbolOffsetT d_out_offsets[MAX_NUM_STATES * MAX_NUM_SYMBOLS + 1];
@@ -616,14 +701,19 @@ class TransducerLookupTable {
  * sequence of symbols that the finite-state transducer is supposed to output for each transition.
  *
  * @tparam MAX_TABLE_SIZE The maximum number of items in the lookup table of output symbols
- * be used
+ * @tparam MIN_TRANSLATED_OUT The minimum number of symbols being output by a single state
+ * transition
+ * @tparam MAX_TRANSLATED_OUT The maximum number of symbols being output by a single state
+ * transition
  * @tparam OutSymbolT The symbol type being output
- * @tparam MAX_NUM_SYMBOLS The maximum number of symbols being output by a single state transition
+ * @tparam MAX_NUM_SYMBOLS The maximum number of symbol groups supported by this lookup table
  * @tparam MAX_NUM_STATES The maximum number of states that this lookup table shall support
  * @param translation_table The translation table
  * @return A translation table of type `TransducerLookupTable`.
  */
 template <std::size_t MAX_TABLE_SIZE,
+          std::size_t MIN_TRANSLATED_OUT,
+          std::size_t MAX_TRANSLATED_OUT,
           typename OutSymbolT,
           std::size_t MAX_NUM_SYMBOLS,
           std::size_t MAX_NUM_STATES>
@@ -635,20 +725,30 @@ auto make_translation_table(std::array<std::array<std::vector<OutSymbolT>, MAX_N
                                                     OutSymbolOffsetT,
                                                     MAX_NUM_SYMBOLS,
                                                     MAX_NUM_STATES,
+                                                    MIN_TRANSLATED_OUT,
+                                                    MAX_TRANSLATED_OUT,
                                                     MAX_TABLE_SIZE>;
   return translation_table_t::InitDeviceTranslationTable(translation_table);
 }
 
-template <typename TranslationOpT>
+template <typename TranslationOpT,
+          typename OutSymbolT_,
+          std::int32_t MIN_TRANSLATED_OUT_,
+          std::int32_t MAX_TRANSLATED_OUT_>
 class TranslationOp {
  private:
   struct _TempStorage {};
 
  public:
+  using OutSymbolT                            = OutSymbolT_;
+  static constexpr int32_t MIN_TRANSLATED_OUT = MIN_TRANSLATED_OUT_;
+  static constexpr int32_t MAX_TRANSLATED_OUT = MAX_TRANSLATED_OUT_;
+
   using TempStorage = cub::Uninitialized<_TempStorage>;
 
   struct KernelParameter {
-    using LookupTableT = TranslationOp<TranslationOpT>;
+    using LookupTableT =
+      TranslationOp<TranslationOpT, OutSymbolT, MIN_TRANSLATED_OUT, MAX_TRANSLATED_OUT>;
     TranslationOpT translation_op;
   };
 
@@ -685,7 +785,7 @@ class TranslationOp {
                                              RelativeOffsetT const relative_offset,
                                              SymbolT const read_symbol) const
   {
-    return translation_op(*this, state_id, match_id, relative_offset, read_symbol);
+    return translation_op(state_id, match_id, relative_offset, read_symbol);
   }
 
   template <typename StateIndexT, typename SymbolIndexT, typename SymbolT>
@@ -693,7 +793,7 @@ class TranslationOp {
                                              SymbolIndexT const match_id,
                                              SymbolT const read_symbol) const
   {
-    return translation_op(*this, state_id, match_id, read_symbol);
+    return translation_op(state_id, match_id, read_symbol);
   }
 };
 
@@ -702,6 +802,10 @@ class TranslationOp {
  *
  * @tparam FunctorT A function object type that must implement two signatures: (1) with `(state_id,
  * match_id, read_symbol)` and (2) with `(state_id, match_id, relative_offset, read_symbol)`
+ * @tparam MIN_TRANSLATED_SYMBOLS The minimum number of translated output symbols for any given
+ * input symbol
+ * @tparam MAX_TRANSLATED_SYMBOLS The maximum number of translated output symbols for any given
+ * input symbol
  * @param map_op A function object that must implement two signatures: (1) with `(state_id,
  * match_id, read_symbol)` and (2) with `(state_id, match_id, relative_offset, read_symbol)`.
  * Invocations of the first signature, (1), must return the number of symbols that are emitted for
@@ -709,10 +813,14 @@ class TranslationOp {
  * that transition, where `i` corresponds to `relative_offse`
  * @return A translation table of type `TranslationO`
  */
-template <typename FunctorT>
+template <typename OutSymbolT,
+          std::size_t MIN_TRANSLATED_OUT,
+          std::size_t MAX_TRANSLATED_OUT,
+          typename FunctorT>
 auto make_translation_functor(FunctorT map_op)
 {
-  return TranslationOp<FunctorT>::InitDeviceTranslationTable(map_op);
+  return TranslationOp<FunctorT, OutSymbolT, MIN_TRANSLATED_OUT, MAX_TRANSLATED_OUT>::
+    InitDeviceTranslationTable(map_op);
 }
 
 /**
@@ -830,7 +938,7 @@ class Dfa {
 };
 
 /**
- * @brief Creates a determninistic finite automaton (DFA) as specified by the triple of (symbol
+ * @brief Creates a deterministic finite automaton (DFA) as specified by the triple of (symbol
  * group, transition, translation)-lookup tables to be used with the finite-state transducer
  * algorithm.
  *

@@ -1,12 +1,17 @@
-# Copyright (c) 2021-2023, NVIDIA CORPORATION.
+# Copyright (c) 2021-2025, NVIDIA CORPORATION.
 import math
 import operator
 
 import numpy as np
 import pytest
 from numba import cuda
+from numba.core.typing import signature as nb_signature
+from numba.core.typing.templates import AbstractTemplate
+from numba.cuda.cudadecl import registry as cuda_decl_registry
+from numba.cuda.cudaimpl import lower as cuda_lower
 
 import cudf
+from cudf.core._compat import PANDAS_CURRENT_SUPPORTED_VERSION, PANDAS_VERSION
 from cudf.core.missing import NA
 from cudf.core.udf._ops import (
     arith_ops,
@@ -15,13 +20,53 @@ from cudf.core.udf._ops import (
     unary_ops,
 )
 from cudf.core.udf.api import Masked
+from cudf.core.udf.strings_lowering import (
+    cast_string_view_to_managed_udf_string,
+)
+from cudf.core.udf.strings_typing import (
+    StringView,
+    managed_udf_string,
+    string_view,
+)
 from cudf.core.udf.utils import precompiled
+from cudf.testing import assert_eq
 from cudf.testing._utils import (
     _decimal_series,
-    assert_eq,
     parametrize_numeric_dtypes_pairwise,
-    sv_to_udf_str,
 )
+
+
+def sv_to_managed_udf_str(sv):
+    """
+    Cast a string_view object to a managed_udf_string object
+
+    This placeholder function never runs in python
+    It exists only for numba to have something to replace
+    with the typing and lowering code below
+
+    This is similar conceptually to needing a translation
+    engine to emit an expression in target language "B" when
+    there is no equivalent in the source language "A" to
+    translate from. This function effectively defines the
+    expression in language "A" and the associated typing
+    and lowering describe the translation process, despite
+    the expression having no meaning in language "A"
+    """
+    pass
+
+
+@cuda_decl_registry.register_global(sv_to_managed_udf_str)
+class StringViewToUDFStringDecl(AbstractTemplate):
+    def generic(self, args, kws):
+        if isinstance(args[0], StringView) and len(args) == 1:
+            return nb_signature(managed_udf_string, string_view)
+
+
+@cuda_lower(sv_to_managed_udf_str, string_view)
+def sv_to_udf_str_testing_lowering(context, builder, sig, args):
+    return cast_string_view_to_managed_udf_string(
+        context, builder, sig.args[0], sig.return_type, args[0]
+    )
 
 
 @pytest.fixture(scope="module")
@@ -64,9 +109,9 @@ def substr(request):
     return request.param
 
 
-def run_masked_udf_test(func, data, args=(), **kwargs):
+def run_masked_udf_test(func, data, args=(), nullable=True, **kwargs):
     gdf = data
-    pdf = data.to_pandas(nullable=True)
+    pdf = data.to_pandas(nullable=nullable)
 
     expect = pdf.apply(func, args=args, axis=1)
     obtain = gdf.apply(func, args=args, axis=1)
@@ -74,7 +119,6 @@ def run_masked_udf_test(func, data, args=(), **kwargs):
 
 
 def run_masked_string_udf_test(func, data, args=(), **kwargs):
-
     gdf = data
     pdf = data.to_pandas(nullable=True)
 
@@ -96,7 +140,7 @@ def run_masked_string_udf_test(func, data, args=(), **kwargs):
     # prior to running the input function
     def udf_string_wrapper(row):
         masked_udf_str = Masked(
-            sv_to_udf_str(row["str_col"].value), row["str_col"].valid
+            sv_to_managed_udf_str(row["str_col"].value), row["str_col"].valid
         )
         return func(masked_udf_str)
 
@@ -184,7 +228,17 @@ def test_arith_masked_vs_masked_datelike(op, dtype_l, dtype_r):
     )
     gdf["a"] = gdf["a"].astype(dtype_l)
     gdf["b"] = gdf["b"].astype(dtype_r)
-    run_masked_udf_test(func, gdf, check_dtype=False)
+
+    pdf = gdf.to_pandas()
+    expect = op(pdf["a"], pdf["b"])
+    obtain = gdf.apply(func, axis=1)
+    assert_eq(expect, obtain, check_dtype=False)
+    # TODO: After the following pandas issue is
+    # fixed, uncomment the following line and delete
+    # through `to_pandas()` statement.
+    # https://github.com/pandas-dev/pandas/issues/52411
+
+    # run_masked_udf_test(func, gdf, nullable=False, check_dtype=False)
 
 
 @pytest.mark.parametrize("op", comparison_ops)
@@ -473,6 +527,10 @@ def test_series_apply_basic(data, name):
     run_masked_udf_series(func, data, check_dtype=False)
 
 
+@pytest.mark.xfail(
+    PANDAS_VERSION >= PANDAS_CURRENT_SUPPORTED_VERSION,
+    reason="https://github.com/pandas-dev/pandas/issues/57390",
+)
 def test_series_apply_null_conditional():
     def func(x):
         if x is NA:
@@ -497,6 +555,10 @@ def test_series_arith_masked_vs_masked(op):
     run_masked_udf_series(func, data, check_dtype=False)
 
 
+@pytest.mark.xfail(
+    PANDAS_VERSION >= PANDAS_CURRENT_SUPPORTED_VERSION,
+    reason="https://github.com/pandas-dev/pandas/issues/57390",
+)
 @pytest.mark.parametrize("op", comparison_ops)
 def test_series_compare_masked_vs_masked(op):
     """
@@ -553,6 +615,10 @@ def test_series_arith_masked_vs_constant_reflected(request, op, constant):
     run_masked_udf_series(func, data, check_dtype=False)
 
 
+@pytest.mark.xfail(
+    PANDAS_VERSION >= PANDAS_CURRENT_SUPPORTED_VERSION,
+    reason="https://github.com/pandas-dev/pandas/issues/57390",
+)
 def test_series_masked_is_null_conditional():
     def func(x):
         if x is NA:
@@ -636,7 +702,7 @@ def test_masked_udf_subset_selection(data):
             ["1.0", "2.0", "3.0"], dtype=cudf.Decimal64Dtype(2, 1)
         ),
         cudf.Series([1, 2, 3], dtype="category"),
-        cudf.interval_range(start=0, end=3, closed=True),
+        cudf.interval_range(start=0, end=3),
         [[1, 2], [3, 4], [5, 6]],
         [{"a": 1}, {"a": 2}, {"a": 3}],
     ],
@@ -733,8 +799,16 @@ def test_mask_udf_scalar_args_binops_series(data, op):
     ],
 )
 @pytest.mark.parametrize("op", arith_ops + comparison_ops)
-def test_masked_udf_scalar_args_binops_multiple_series(data, op):
+def test_masked_udf_scalar_args_binops_multiple_series(request, data, op):
     data = cudf.Series(data)
+    request.applymarker(
+        pytest.mark.xfail(
+            op in comparison_ops
+            and PANDAS_VERSION >= PANDAS_CURRENT_SUPPORTED_VERSION
+            and data.dtype.kind != "b",
+            reason="https://github.com/pandas-dev/pandas/issues/57390",
+        )
+    )
 
     def func(data, c, k):
         x = op(data, c)
@@ -937,6 +1011,7 @@ class TestStringUDFs:
 
         run_masked_udf_test(func, str_udf_data, check_dtype=False)
 
+    @pytest.mark.xfail(reason="Identity function not supported.")
     def test_string_udf_return_string(self, str_udf_data):
         def func(row):
             return row["str_col"]

@@ -1,4 +1,4 @@
-# Copyright (c) 2019-2023, NVIDIA CORPORATION.
+# Copyright (c) 2019-2025, NVIDIA CORPORATION.
 
 import textwrap
 
@@ -12,22 +12,27 @@ import cudf
 from cudf.testing import _utils as utils
 from cudf.utils.dtypes import np_dtypes_to_pandas_dtypes
 
-repr_categories = [
-    "uint16",
-    "int64",
-    "float64",
-    "str",
-    "category",
-    "datetime64[ns]",
-]
+
+@pytest.fixture(
+    params=[
+        "uint16",
+        "int64",
+        "float64",
+        "str",
+        "category",
+        "datetime64[ns]",
+    ]
+)
+def dtype(request):
+    return request.param
 
 
-@pytest.mark.parametrize("dtype", repr_categories)
 @pytest.mark.parametrize("nrows", [0, 5, 10])
 def test_null_series(nrows, dtype):
+    rng = np.random.default_rng(seed=0)
     size = 5
-    sr = cudf.Series(np.random.randint(1, 9, size)).astype(dtype)
-    sr[np.random.choice([False, True], size=size)] = None
+    sr = cudf.Series(rng.integers(1, 9, size)).astype(dtype)
+    sr[rng.choice([False, True], size=size)] = None
     if dtype != "category" and cudf.dtype(dtype).kind in {"u", "i"}:
         ps = pd.Series(
             sr._column.data_array_view(mode="read").copy_to_host(),
@@ -39,66 +44,54 @@ def test_null_series(nrows, dtype):
     else:
         ps = sr.to_pandas()
 
-    pd.options.display.max_rows = int(nrows)
-    psrepr = repr(ps)
-    psrepr = psrepr.replace("NaN", "<NA>")
-    psrepr = psrepr.replace("NaT", "<NA>")
-    psrepr = psrepr.replace("None", "<NA>")
-    if "UInt" in psrepr:
-        psrepr = psrepr.replace("UInt", "uint")
-    elif "Int" in psrepr:
-        psrepr = psrepr.replace("Int", "int")
-    assert psrepr.split() == repr(sr).split()
-    pd.reset_option("display.max_rows")
-
-
-dtype_categories = [
-    "float32",
-    "float64",
-    "datetime64[ns]",
-    "str",
-    "category",
-]
+    with pd.option_context("display.max_rows", int(nrows)):
+        psrepr = repr(ps).replace("NaN", "<NA>").replace("None", "<NA>")
+        if "UInt" in psrepr:
+            psrepr = psrepr.replace("UInt", "uint")
+        elif "Int" in psrepr:
+            psrepr = psrepr.replace("Int", "int")
+        assert psrepr.split() == repr(sr).split()
 
 
 @pytest.mark.parametrize("ncols", [1, 2, 3, 4, 5, 10])
 def test_null_dataframe(ncols):
+    dtype_categories = [
+        "float32",
+        "float64",
+        "datetime64[ns]",
+        "str",
+        "category",
+    ]
+    rng = np.random.default_rng(seed=0)
     size = 20
     gdf = cudf.DataFrame()
-    for idx, dtype in enumerate(dtype_categories):
-        sr = cudf.Series(np.random.randint(0, 128, size)).astype(dtype)
-        sr[np.random.choice([False, True], size=size)] = None
+    for dtype in dtype_categories:
+        sr = cudf.Series(rng.integers(0, 128, size)).astype(dtype)
+        sr[rng.choice([False, True], size=size)] = None
         gdf[dtype] = sr
     pdf = gdf.to_pandas()
-    pd.options.display.max_columns = int(ncols)
-    pdf_repr = (
-        repr(pdf)
-        .replace("NaN", "<NA>")
-        .replace("NaT", "<NA>")
-        .replace("None", "<NA>")
-    )
-    assert pdf_repr.split() == repr(gdf).split()
-    pd.reset_option("display.max_columns")
+    with pd.option_context("display.max_columns", int(ncols)):
+        pdf_repr = repr(pdf).replace("NaN", "<NA>").replace("None", "<NA>")
+        assert pdf_repr.split() == repr(gdf).split()
 
 
-@pytest.mark.parametrize("dtype", repr_categories)
 @pytest.mark.parametrize("nrows", [None, 0, 1, 2, 9, 10, 11, 19, 20, 21])
 def test_full_series(nrows, dtype):
     size = 20
-    ps = pd.Series(np.random.randint(0, 100, size)).astype(dtype)
+    rng = np.random.default_rng(seed=0)
+    ps = pd.Series(rng.integers(0, 100, size)).astype(dtype)
     sr = cudf.from_pandas(ps)
-    pd.options.display.max_rows = nrows
-    assert repr(ps) == repr(sr)
-    pd.reset_option("display.max_rows")
+    with pd.option_context("display.max_rows", nrows):
+        assert repr(ps) == repr(sr)
 
 
 @pytest.mark.parametrize("nrows", [5, 10, 15])
 @pytest.mark.parametrize("ncols", [5, 10, 15])
 @pytest.mark.parametrize("size", [20, 21])
-@pytest.mark.parametrize("dtype", repr_categories)
 def test_full_dataframe_20(dtype, size, nrows, ncols):
+    rng = np.random.default_rng(seed=0)
     pdf = pd.DataFrame(
-        {idx: np.random.randint(0, 100, size) for idx in range(size)}
+        {idx: rng.integers(0, 100, size) for idx in range(size)}
     ).astype(dtype)
     gdf = cudf.from_pandas(pdf)
 
@@ -114,25 +107,24 @@ def test_full_dataframe_20(dtype, size, nrows, ncols):
     st.lists(
         st.integers(-9223372036854775808, 9223372036854775807),
         min_size=1,
-        max_size=10000,
+        max_size=1000,
     )
 )
-@settings(deadline=None)
+@settings(deadline=None, max_examples=20)
 def test_integer_dataframe(x):
     gdf = cudf.DataFrame({"x": x})
     pdf = gdf.to_pandas()
-    pd.options.display.max_columns = 1
-    assert repr(gdf) == repr(pdf)
-    assert repr(gdf.T) == repr(pdf.T)
-    pd.reset_option("display.max_columns")
+    with pd.option_context("display.max_columns", 1):
+        assert repr(gdf) == repr(pdf)
+        assert repr(gdf.T) == repr(pdf.T)
 
 
 @given(
     st.lists(
-        st.integers(-9223372036854775808, 9223372036854775807), max_size=10000
+        st.integers(-9223372036854775808, 9223372036854775807), max_size=1000
     )
 )
-@settings(deadline=None)
+@settings(deadline=None, max_examples=20)
 def test_integer_series(x):
     sr = cudf.Series(x, dtype=int)
     ps = pd.Series(data=x, dtype=int)
@@ -141,7 +133,7 @@ def test_integer_series(x):
 
 
 @given(st.lists(st.floats()))
-@settings(deadline=None)
+@settings(deadline=None, max_examples=20)
 def test_float_dataframe(x):
     gdf = cudf.DataFrame({"x": cudf.Series(x, dtype=float, nan_as_null=False)})
     pdf = gdf.to_pandas()
@@ -149,7 +141,7 @@ def test_float_dataframe(x):
 
 
 @given(st.lists(st.floats()))
-@settings(deadline=None)
+@settings(deadline=None, max_examples=20)
 def test_float_series(x):
     sr = cudf.Series(x, dtype=float, nan_as_null=False)
     ps = pd.Series(data=x, dtype=float)
@@ -186,30 +178,26 @@ def test_mixed_series(mixed_pdf, mixed_gdf):
 
 
 def test_MI():
+    rng = np.random.default_rng(seed=0)
     gdf = cudf.DataFrame(
         {
-            "a": np.random.randint(0, 4, 10),
-            "b": np.random.randint(0, 4, 10),
-            "c": np.random.randint(0, 4, 10),
+            "a": rng.integers(0, 4, 10),
+            "b": rng.integers(0, 4, 10),
+            "c": rng.integers(0, 4, 10),
         }
     )
     levels = [["a", "b", "c", "d"], ["w", "x", "y", "z"], ["m", "n"]]
-    codes = cudf.DataFrame(
-        {
-            "a": [0, 0, 0, 0, 1, 1, 2, 2, 3, 3],
-            "b": [0, 1, 2, 3, 0, 1, 2, 3, 0, 1],
-            "c": [0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
-        }
-    )
-    pd.options.display.max_rows = 999
-    pd.options.display.max_columns = 0
-    gdf = gdf.set_index(cudf.MultiIndex(levels=levels, codes=codes))
-    pdf = gdf.to_pandas()
-    assert repr(gdf) == repr(pdf)
-    assert repr(gdf.index) == repr(pdf.index)
-    assert repr(gdf.T) == repr(pdf.T)
-    pd.reset_option("display.max_rows")
-    pd.reset_option("display.max_columns")
+    codes = [
+        [0, 0, 0, 0, 1, 1, 2, 2, 3, 3],
+        [0, 1, 2, 3, 0, 1, 2, 3, 0, 1],
+        [0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+    ]
+    with pd.option_context("display.max_rows", 999, "display.max_columns", 0):
+        gdf = gdf.set_index(cudf.MultiIndex(levels=levels, codes=codes))
+        pdf = gdf.to_pandas()
+        assert repr(gdf) == repr(pdf)
+        assert repr(gdf.index) == repr(pdf.index)
+        assert repr(gdf.T) == repr(pdf.T)
 
 
 @pytest.mark.parametrize("nrows", [0, 1, 3, 5, 10])
@@ -221,21 +209,21 @@ def test_groupby_MI(nrows, ncols):
     pdf = gdf.to_pandas()
     gdg = gdf.groupby(["a", "b"], sort=True).count()
     pdg = pdf.groupby(["a", "b"], sort=True).count()
-    pd.options.display.max_rows = nrows
-    pd.options.display.max_columns = ncols
-    assert repr(gdg) == repr(pdg)
-    assert repr(gdg.index) == repr(pdg.index)
-    assert repr(gdg.T) == repr(pdg.T)
-    pd.reset_option("display.max_rows")
-    pd.reset_option("display.max_columns")
+    with pd.option_context(
+        "display.max_rows", nrows, "display.max_columns", ncols
+    ):
+        assert repr(gdg) == repr(pdg)
+        assert repr(gdg.index) == repr(pdg.index)
+        assert repr(gdg.T) == repr(pdg.T)
 
 
 @pytest.mark.parametrize("dtype", utils.NUMERIC_TYPES)
 @pytest.mark.parametrize("length", [0, 1, 10, 100, 1000])
 def test_generic_index(length, dtype):
+    rng = np.random.default_rng(seed=0)
     psr = pd.Series(
         range(length),
-        index=np.random.randint(0, high=100, size=length).astype(dtype),
+        index=rng.integers(0, high=100, size=length).astype(dtype),
         dtype="float64" if length == 0 else None,
     )
     gsr = cudf.Series.from_pandas(psr)
@@ -246,23 +234,25 @@ def test_generic_index(length, dtype):
 @pytest.mark.parametrize(
     "gdf",
     [
-        cudf.DataFrame({"a": range(10000)}),
-        cudf.DataFrame({"a": range(10000), "b": range(10000)}),
-        cudf.DataFrame({"a": range(20), "b": range(20)}),
-        cudf.DataFrame(
+        lambda: cudf.DataFrame({"a": range(10000)}),
+        lambda: cudf.DataFrame({"a": range(10000), "b": range(10000)}),
+        lambda: cudf.DataFrame({"a": range(20), "b": range(20)}),
+        lambda: cudf.DataFrame(
             {
                 "a": range(20),
                 "b": range(20),
                 "c": ["abc", "def", "xyz", "def", "pqr"] * 4,
             }
         ),
-        cudf.DataFrame(index=[1, 2, 3]),
-        cudf.DataFrame(index=range(10000)),
-        cudf.DataFrame(columns=["a", "b", "c", "d"]),
-        cudf.DataFrame(columns=["a"], index=range(10000)),
-        cudf.DataFrame(columns=["a", "col2", "...col n"], index=range(10000)),
-        cudf.DataFrame(index=cudf.Series(range(10000)).astype("str")),
-        cudf.DataFrame(
+        lambda: cudf.DataFrame(index=[1, 2, 3]),
+        lambda: cudf.DataFrame(index=range(10000)),
+        lambda: cudf.DataFrame(columns=["a", "b", "c", "d"]),
+        lambda: cudf.DataFrame(columns=["a"], index=range(10000)),
+        lambda: cudf.DataFrame(
+            columns=["a", "col2", "...col n"], index=range(10000)
+        ),
+        lambda: cudf.DataFrame(index=cudf.Series(range(10000)).astype("str")),
+        lambda: cudf.DataFrame(
             columns=["a", "b", "c", "d"],
             index=cudf.Series(range(10000)).astype("str"),
         ),
@@ -282,115 +272,126 @@ def test_generic_index(length, dtype):
 @pytest.mark.parametrize("max_seq_items", [1, 10, 60, 10000, None])
 @pytest.mark.parametrize("max_rows", [1, 10, 60, 10000, None])
 def test_dataframe_sliced(gdf, slice, max_seq_items, max_rows):
-    pd.options.display.max_seq_items = max_seq_items
-    pd.options.display.max_rows = max_rows
-    pdf = gdf.to_pandas()
+    gdf = gdf()
+    with pd.option_context(
+        "display.max_seq_items", max_seq_items, "display.max_rows", max_rows
+    ):
+        pdf = gdf.to_pandas()
 
-    sliced_gdf = gdf[slice]
-    sliced_pdf = pdf[slice]
+        sliced_gdf = gdf[slice]
+        sliced_pdf = pdf[slice]
 
-    expected_repr = repr(sliced_pdf).replace("None", "<NA>")
-    actual_repr = repr(sliced_gdf)
+        expected_repr = repr(sliced_pdf).replace("None", "<NA>")
+        actual_repr = repr(sliced_gdf)
 
-    assert expected_repr == actual_repr
-    pd.reset_option("display.max_rows")
-    pd.reset_option("display.max_seq_items")
+        assert expected_repr == actual_repr
 
 
 @pytest.mark.parametrize(
     "index,expected_repr",
     [
         (
-            cudf.Index([1, 2, 3, None]),
-            "Int64Index([1, 2, 3, <NA>], dtype='int64')",
+            lambda: cudf.Index([1, 2, 3, None]),
+            "Index([1, 2, 3, <NA>], dtype='int64')",
         ),
         (
-            cudf.Index([None, 2.2, 3.324342, None]),
-            "Float64Index([<NA>, 2.2, 3.324342, <NA>], dtype='float64')",
+            lambda: cudf.Index([None, 2.2, 3.324342, None]),
+            "Index([<NA>, 2.2, 3.324342, <NA>], dtype='float64')",
         ),
         (
-            cudf.Index([None, None, None], name="hello"),
-            "StringIndex([None None None], dtype='object', name='hello')",
+            lambda: cudf.Index([None, None, None], name="hello"),
+            "Index([<NA>, <NA>, <NA>], dtype='object', name='hello')",
         ),
         (
-            cudf.Index([None, None, None], dtype="float", name="hello"),
-            "Float64Index([<NA>, <NA>, <NA>], dtype='float64', name='hello')",
+            lambda: cudf.Index(
+                [None, None, None], dtype="float", name="hello"
+            ),
+            "Index([<NA>, <NA>, <NA>], dtype='float64', name='hello')",
         ),
         (
-            cudf.Index([None], dtype="float64", name="hello"),
-            "Float64Index([<NA>], dtype='float64', name='hello')",
+            lambda: cudf.Index([None], dtype="float64", name="hello"),
+            "Index([<NA>], dtype='float64', name='hello')",
         ),
         (
-            cudf.Index([None], dtype="int8", name="hello"),
-            "Int8Index([<NA>], dtype='int8', name='hello')",
+            lambda: cudf.Index([None], dtype="int8", name="hello"),
+            "Index([<NA>], dtype='int8', name='hello')",
         ),
         (
-            cudf.Index([None] * 50, dtype="object"),
-            "StringIndex([None None None None None None None None "
-            "None None None None None None\n None None None None None None "
-            "None None None None None None None None\n None None None None "
-            "None None None None None None None None None None\n None None "
-            "None None None None None None], dtype='object')",
+            lambda: cudf.Index([None] * 50, dtype="object"),
+            "Index([<NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>"
+            ", <NA>, <NA>,\n       <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, "
+            "<NA>, <NA>, <NA>, <NA>, <NA>,\n       <NA>, <NA>, <NA>, <NA>, "
+            "<NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>,\n       <NA>, "
+            "<NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, "
+            "<NA>,\n       <NA>, <NA>],\n      dtype='object')",
         ),
         (
-            cudf.Index([None] * 20, dtype="uint32"),
-            "UInt32Index([<NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, "
+            lambda: cudf.Index([None] * 20, dtype="uint32"),
+            "Index([<NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, "
             "<NA>,\n       <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, "
             "<NA>,\n       <NA>, <NA>],\n      dtype='uint32')",
         ),
         (
-            cudf.Index(
+            lambda: cudf.Index(
                 [None, 111, 22, 33, None, 23, 34, 2343, None], dtype="int16"
             ),
-            "Int16Index([<NA>, 111, 22, 33, <NA>, 23, 34, 2343, <NA>], "
+            "Index([<NA>, 111, 22, 33, <NA>, 23, 34, 2343, <NA>], "
             "dtype='int16')",
         ),
         (
-            cudf.Index([1, 2, 3, None], dtype="category"),
+            lambda: cudf.Index([1, 2, 3, None], dtype="category"),
             "CategoricalIndex([1, 2, 3, <NA>], categories=[1, 2, 3], "
             "ordered=False, dtype='category')",
         ),
         (
-            cudf.Index([None, None], dtype="category"),
+            lambda: cudf.Index([None, None], dtype="category"),
             "CategoricalIndex([<NA>, <NA>], categories=[], ordered=False, "
             "dtype='category')",
         ),
         (
-            cudf.Index(np.array([10, 20, 30, None], dtype="datetime64[ns]")),
+            lambda: cudf.Index(
+                np.array([10, 20, 30, None], dtype="datetime64[ns]")
+            ),
             "DatetimeIndex([1970-01-01 00:00:00.000000010, "
             "1970-01-01 00:00:00.000000020,"
-            "\n       1970-01-01 00:00:00.000000030, <NA>],\n      "
+            "\n       1970-01-01 00:00:00.000000030, NaT],\n      "
             "dtype='datetime64[ns]')",
         ),
         (
-            cudf.Index(np.array([10, 20, 30, None], dtype="datetime64[s]")),
+            lambda: cudf.Index(
+                np.array([10, 20, 30, None], dtype="datetime64[s]")
+            ),
             "DatetimeIndex([1970-01-01 00:00:10, "
             "1970-01-01 00:00:20, 1970-01-01 00:00:30,\n"
-            "       <NA>],\n      dtype='datetime64[s]')",
+            "       NaT],\n      dtype='datetime64[s]')",
         ),
         (
-            cudf.Index(np.array([10, 20, 30, None], dtype="datetime64[us]")),
+            lambda: cudf.Index(
+                np.array([10, 20, 30, None], dtype="datetime64[us]")
+            ),
             "DatetimeIndex([1970-01-01 00:00:00.000010, "
             "1970-01-01 00:00:00.000020,\n       "
-            "1970-01-01 00:00:00.000030, <NA>],\n      "
+            "1970-01-01 00:00:00.000030, NaT],\n      "
             "dtype='datetime64[us]')",
         ),
         (
-            cudf.Index(np.array([10, 20, 30, None], dtype="datetime64[ms]")),
+            lambda: cudf.Index(
+                np.array([10, 20, 30, None], dtype="datetime64[ms]")
+            ),
             "DatetimeIndex([1970-01-01 00:00:00.010, "
             "1970-01-01 00:00:00.020,\n       "
-            "1970-01-01 00:00:00.030, <NA>],\n      "
+            "1970-01-01 00:00:00.030, NaT],\n      "
             "dtype='datetime64[ms]')",
         ),
         (
-            cudf.Index(np.array([None] * 10, dtype="datetime64[ms]")),
-            "DatetimeIndex([<NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, <NA>, "
-            "<NA>,\n       <NA>],\n      dtype='datetime64[ms]')",
+            lambda: cudf.Index(np.array([None] * 10, dtype="datetime64[ms]")),
+            "DatetimeIndex([NaT, NaT, NaT, NaT, NaT, NaT, NaT, NaT, "
+            "NaT, NaT], dtype='datetime64[ms]')",
         ),
     ],
 )
 def test_generic_index_null(index, expected_repr):
-
+    index = index()
     actual_repr = repr(index)
 
     assert expected_repr == actual_repr
@@ -473,16 +474,11 @@ def test_dataframe_null_index_repr(df, pandas_special_case):
     pdf = df
     gdf = cudf.from_pandas(pdf)
 
-    expected_repr = (
-        repr(pdf)
-        .replace("NaN", "<NA>")
-        .replace("NaT", "<NA>")
-        .replace("None", "<NA>")
-    )
+    expected_repr = repr(pdf).replace("NaN", "<NA>").replace("None", "<NA>")
     actual_repr = repr(gdf)
 
     if pandas_special_case:
-        # Pandas inconsistently print StringIndex null values
+        # Pandas inconsistently print Index null values
         # as `None` at some places and `NaN` at few other places
         # Whereas cudf is consistent with strings `null` values
         # to be printed as `None` everywhere.
@@ -552,16 +548,11 @@ def test_series_null_index_repr(sr, pandas_special_case):
     psr = sr
     gsr = cudf.from_pandas(psr)
 
-    expected_repr = (
-        repr(psr)
-        .replace("NaN", "<NA>")
-        .replace("NaT", "<NA>")
-        .replace("None", "<NA>")
-    )
+    expected_repr = repr(psr).replace("NaN", "<NA>").replace("None", "<NA>")
     actual_repr = repr(gsr)
 
     if pandas_special_case:
-        # Pandas inconsistently print StringIndex null values
+        # Pandas inconsistently print Index null values
         # as `None` at some places and `NaN` at few other places
         # Whereas cudf is consistent with strings `null` values
         # to be printed as `None` everywhere.
@@ -603,9 +594,7 @@ def test_timedelta_series_s_us_repr(data, dtype):
     sr = cudf.Series(data, dtype=dtype)
     psr = sr.to_pandas()
 
-    expected = (
-        repr(psr).replace("timedelta64[ns]", dtype).replace("NaT", "<NA>")
-    )
+    expected = repr(psr).replace("timedelta64[ns]", dtype)
     actual = repr(sr)
 
     assert expected.split() == actual.split()
@@ -615,7 +604,7 @@ def test_timedelta_series_s_us_repr(data, dtype):
     "ser, expected_repr",
     [
         (
-            cudf.Series([], dtype="timedelta64[ns]"),
+            lambda: cudf.Series([], dtype="timedelta64[ns]"),
             textwrap.dedent(
                 """
             Series([], dtype: timedelta64[ns])
@@ -623,7 +612,7 @@ def test_timedelta_series_s_us_repr(data, dtype):
             ),
         ),
         (
-            cudf.Series([], dtype="timedelta64[ms]"),
+            lambda: cudf.Series([], dtype="timedelta64[ms]"),
             textwrap.dedent(
                 """
             Series([], dtype: timedelta64[ms])
@@ -631,18 +620,22 @@ def test_timedelta_series_s_us_repr(data, dtype):
             ),
         ),
         (
-            cudf.Series([1000000, 200000, 3000000], dtype="timedelta64[ns]"),
+            lambda: cudf.Series(
+                [1000000, 200000, 3000000], dtype="timedelta64[ns]"
+            ),
             textwrap.dedent(
                 """
-            0    0 days 00:00:00.001000000
-            1    0 days 00:00:00.000200000
-            2    0 days 00:00:00.003000000
+            0    0 days 00:00:00.001000
+            1    0 days 00:00:00.000200
+            2    0 days 00:00:00.003000
             dtype: timedelta64[ns]
             """
             ),
         ),
         (
-            cudf.Series([1000000, 200000, 3000000], dtype="timedelta64[ms]"),
+            lambda: cudf.Series(
+                [1000000, 200000, 3000000], dtype="timedelta64[ms]"
+            ),
             textwrap.dedent(
                 """
             0    0 days 00:16:40
@@ -653,59 +646,63 @@ def test_timedelta_series_s_us_repr(data, dtype):
             ),
         ),
         (
-            cudf.Series([1000000, 200000, None], dtype="timedelta64[ns]"),
+            lambda: cudf.Series(
+                [1000000, 200000, None], dtype="timedelta64[ns]"
+            ),
             textwrap.dedent(
                 """
             0    0 days 00:00:00.001000000
             1    0 days 00:00:00.000200000
-            2                         <NA>
+            2                          NaT
             dtype: timedelta64[ns]
             """
             ),
         ),
         (
-            cudf.Series([1000000, 200000, None], dtype="timedelta64[ms]"),
+            lambda: cudf.Series(
+                [1000000, 200000, None], dtype="timedelta64[ms]"
+            ),
             textwrap.dedent(
                 """
             0    0 days 00:16:40
             1    0 days 00:03:20
-            2               <NA>
+            2                NaT
             dtype: timedelta64[ms]
             """
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [None, None, None, None, None], dtype="timedelta64[ns]"
             ),
             textwrap.dedent(
                 """
-            0    <NA>
-            1    <NA>
-            2    <NA>
-            3    <NA>
-            4    <NA>
+            0    NaT
+            1    NaT
+            2    NaT
+            3    NaT
+            4    NaT
             dtype: timedelta64[ns]
             """
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [None, None, None, None, None], dtype="timedelta64[ms]"
             ),
             textwrap.dedent(
                 """
-            0    <NA>
-            1    <NA>
-            2    <NA>
-            3    <NA>
-            4    <NA>
+            0    NaT
+            1    NaT
+            2    NaT
+            3    NaT
+            4    NaT
             dtype: timedelta64[ms]
             """
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [12, 12, 22, 343, 4353534, 435342], dtype="timedelta64[ns]"
             ),
             textwrap.dedent(
@@ -721,23 +718,23 @@ def test_timedelta_series_s_us_repr(data, dtype):
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [12, 12, 22, 343, 4353534, 435342], dtype="timedelta64[ms]"
             ),
             textwrap.dedent(
                 """
-            0    0 days 00:00:00.012
-            1    0 days 00:00:00.012
-            2    0 days 00:00:00.022
-            3    0 days 00:00:00.343
-            4    0 days 01:12:33.534
-            5    0 days 00:07:15.342
+            0    0 days 00:00:00.012000
+            1    0 days 00:00:00.012000
+            2    0 days 00:00:00.022000
+            3    0 days 00:00:00.343000
+            4    0 days 01:12:33.534000
+            5    0 days 00:07:15.342000
             dtype: timedelta64[ms]
             """
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [1.321, 1132.324, 23223231.11, 233.41, 0.2434, 332, 323],
                 dtype="timedelta64[ns]",
             ),
@@ -755,25 +752,25 @@ def test_timedelta_series_s_us_repr(data, dtype):
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [1.321, 1132.324, 23223231.11, 233.41, 0.2434, 332, 323],
                 dtype="timedelta64[ms]",
             ),
             textwrap.dedent(
                 """
-            0    0 days 00:00:00.001
-            1    0 days 00:00:01.132
-            2    0 days 06:27:03.231
-            3    0 days 00:00:00.233
-            4        0 days 00:00:00
-            5    0 days 00:00:00.332
-            6    0 days 00:00:00.323
+            0    0 days 00:00:00.001000
+            1    0 days 00:00:01.132000
+            2    0 days 06:27:03.231000
+            3    0 days 00:00:00.233000
+            4           0 days 00:00:00
+            5    0 days 00:00:00.332000
+            6    0 days 00:00:00.323000
             dtype: timedelta64[ms]
             """
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [
                     13645765432432,
                     134736784,
@@ -787,19 +784,19 @@ def test_timedelta_series_s_us_repr(data, dtype):
             ),
             textwrap.dedent(
                 """
-            0    157937 days 02:23:52.432
-            1         1 days 13:25:36.784
-            2         2 days 20:09:05.345
-            3         2 days 14:03:52.411
-            4     11573 days 23:39:03.241
-            5        42 days 01:35:48.734
-            6         0 days 00:00:23.234
+            0    157937 days 02:23:52.432000
+            1         1 days 13:25:36.784000
+            2         2 days 20:09:05.345000
+            3         2 days 14:03:52.411000
+            4     11573 days 23:39:03.241000
+            5        42 days 01:35:48.734000
+            6         0 days 00:00:23.234000
             dtype: timedelta64[ms]
             """
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [
                     13645765432432,
                     134736784,
@@ -825,7 +822,7 @@ def test_timedelta_series_s_us_repr(data, dtype):
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [
                     13645765432432,
                     134736784,
@@ -840,19 +837,19 @@ def test_timedelta_series_s_us_repr(data, dtype):
             ),
             textwrap.dedent(
                 """
-            0    157937 days 02:23:52.432
-            1         1 days 13:25:36.784
-            2         2 days 20:09:05.345
-            3         2 days 14:03:52.411
-            4     11573 days 23:39:03.241
-            5        42 days 01:35:48.734
-            6         0 days 00:00:23.234
+            0    157937 days 02:23:52.432000
+            1         1 days 13:25:36.784000
+            2         2 days 20:09:05.345000
+            3         2 days 14:03:52.411000
+            4     11573 days 23:39:03.241000
+            5        42 days 01:35:48.734000
+            6         0 days 00:00:23.234000
             Name: abc, dtype: timedelta64[ms]
             """
             ),
         ),
         (
-            cudf.Series(
+            lambda: cudf.Series(
                 [
                     13645765432432,
                     134736784,
@@ -883,7 +880,7 @@ def test_timedelta_series_s_us_repr(data, dtype):
 )
 def test_timedelta_series_ns_ms_repr(ser, expected_repr):
     expected = expected_repr
-    actual = repr(ser)
+    actual = repr(ser())
 
     assert expected.split() == actual.split()
 
@@ -892,7 +889,7 @@ def test_timedelta_series_ns_ms_repr(ser, expected_repr):
     "df,expected_repr",
     [
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": cudf.Series(
                         [1000000, 200000, 3000000], dtype="timedelta64[s]"
@@ -909,7 +906,7 @@ def test_timedelta_series_ns_ms_repr(ser, expected_repr):
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": cudf.Series(
                         [
@@ -930,17 +927,17 @@ def test_timedelta_series_ns_ms_repr(ser, expected_repr):
                 """
                                      a   b
                 0   1579 days 08:54:14  10
-                1                 <NA>  11
+                1                  NaT  11
                 2   2839 days 15:29:05  22
                 3   2586 days 00:33:31  33
-                4                 <NA>  44
+                4                  NaT  44
                 5  42066 days 12:52:14  55
                 6      0 days 06:27:14  66
                 """
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": cudf.Series(
                         [
@@ -961,17 +958,17 @@ def test_timedelta_series_ns_ms_repr(ser, expected_repr):
                 """
                                      a
                 a   1579 days 08:54:14
-                b                 <NA>
+                b                  NaT
                 c   2839 days 15:29:05
                 d   2586 days 00:33:31
-                e                 <NA>
+                e                  NaT
                 f  42066 days 12:52:14
                 g      0 days 06:27:14
                 """
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": cudf.Series(
                         [1, 2, 3, 4, 5, 6, 7],
@@ -994,17 +991,17 @@ def test_timedelta_series_ns_ms_repr(ser, expected_repr):
                 """
                                       a
                 1 days 13:54:17.654   1
-                <NA>                  2
+                NaT                   2
                 2 days 20:09:05.345   3
                 2 days 14:03:52.411   4
-                <NA>                  5
+                NaT                   5
                 42 days 01:35:48.734  6
                 0 days 00:00:23.234   7
                 """
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": cudf.Series(
                         ["a", "f", "q", "e", "w", "e", "t"],
@@ -1027,10 +1024,10 @@ def test_timedelta_series_ns_ms_repr(ser, expected_repr):
                 """
                                     a
                 0 days 00:00:00.136457654  a
-                <NA>                f
+                NaT                 f
                 0 days 00:00:00.245345345  q
                 0 days 00:00:00.223432411  e
-                <NA>                w
+                NaT                 w
                 0 days 00:00:03.634548734  e
                 0 days 00:00:00.000023234  t
                 """
@@ -1039,7 +1036,7 @@ def test_timedelta_series_ns_ms_repr(ser, expected_repr):
     ],
 )
 def test_timedelta_dataframe_repr(df, expected_repr):
-    actual_repr = repr(df)
+    actual_repr = repr(df())
 
     assert actual_repr.split() == expected_repr.split()
 
@@ -1048,20 +1045,22 @@ def test_timedelta_dataframe_repr(df, expected_repr):
     "index, expected_repr",
     [
         (
-            cudf.Index([1000000, 200000, 3000000], dtype="timedelta64[ms]"),
+            lambda: cudf.Index(
+                [1000000, 200000, 3000000], dtype="timedelta64[ms]"
+            ),
             "TimedeltaIndex(['0 days 00:16:40', "
             "'0 days 00:03:20', '0 days 00:50:00'], "
             "dtype='timedelta64[ms]')",
         ),
         (
-            cudf.Index(
+            lambda: cudf.Index(
                 [None, None, None, None, None], dtype="timedelta64[us]"
             ),
-            "TimedeltaIndex([<NA>, <NA>, <NA>, <NA>, <NA>], "
+            "TimedeltaIndex([NaT, NaT, NaT, NaT, NaT], "
             "dtype='timedelta64[us]')",
         ),
         (
-            cudf.Index(
+            lambda: cudf.Index(
                 [
                     136457654,
                     None,
@@ -1073,14 +1072,14 @@ def test_timedelta_dataframe_repr(df, expected_repr):
                 ],
                 dtype="timedelta64[us]",
             ),
-            "TimedeltaIndex([0 days 00:02:16.457654, <NA>, "
+            "TimedeltaIndex([0 days 00:02:16.457654, NaT, "
             "0 days 00:04:05.345345, "
-            "0 days 00:03:43.432411, <NA>,"
+            "0 days 00:03:43.432411, NaT,"
             "       0 days 01:00:34.548734, 0 days 00:00:00.023234],"
             "      dtype='timedelta64[us]')",
         ),
         (
-            cudf.Index(
+            lambda: cudf.Index(
                 [
                     136457654,
                     None,
@@ -1092,15 +1091,15 @@ def test_timedelta_dataframe_repr(df, expected_repr):
                 ],
                 dtype="timedelta64[s]",
             ),
-            "TimedeltaIndex([1579 days 08:54:14, <NA>, 2839 days 15:29:05,"
-            "       2586 days 00:33:31, <NA>, 42066 days 12:52:14, "
+            "TimedeltaIndex([1579 days 08:54:14, NaT, 2839 days 15:29:05,"
+            "       2586 days 00:33:31, NaT, 42066 days 12:52:14, "
             "0 days 06:27:14],"
             "      dtype='timedelta64[s]')",
         ),
     ],
 )
 def test_timedelta_index_repr(index, expected_repr):
-    actual_repr = repr(index)
+    actual_repr = repr(index())
 
     assert actual_repr.split() == expected_repr.split()
 
@@ -1128,18 +1127,17 @@ def test_timedelta_index_repr(index, expected_repr):
 )
 @pytest.mark.parametrize("max_seq_items", [None, 1, 2, 5, 10, 100])
 def test_multiindex_repr(pmi, max_seq_items):
-    pd.set_option("display.max_seq_items", max_seq_items)
-    gmi = cudf.from_pandas(pmi)
+    with pd.option_context("display.max_seq_items", max_seq_items):
+        gmi = cudf.from_pandas(pmi)
 
-    assert repr(gmi) == repr(pmi)
-    pd.reset_option("display.max_seq_items")
+        assert repr(gmi) == repr(pmi)
 
 
 @pytest.mark.parametrize(
     "gdi, expected_repr",
     [
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": [None, 1, 2, 3],
                     "b": ["abc", None, "xyz", None],
@@ -1159,7 +1157,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": cudf.Series([None, np.nan, 2, 3], nan_as_null=False),
                     "b": ["abc", None, "xyz", None],
@@ -1179,7 +1177,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": cudf.Series([None, 1, 2, 3], dtype="datetime64[ns]"),
                     "b": ["abc", None, "xyz", None],
@@ -1190,7 +1188,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             .index,
             textwrap.dedent(
                 """
-            MultiIndex([(                         '<NA>', 'abc'),
+            MultiIndex([(                          'NaT', 'abc'),
                         ('1970-01-01 00:00:00.000000001',  <NA>),
                         ('1970-01-01 00:00:00.000000002', 'xyz'),
                         ('1970-01-01 00:00:00.000000003',  <NA>)],
@@ -1199,7 +1197,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": cudf.Series([None, 1, 2, 3], dtype="datetime64[ns]"),
                     "b": ["abc", None, "xyz", None],
@@ -1210,7 +1208,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             .index,
             textwrap.dedent(
                 """
-                MultiIndex([(                         '<NA>', 'abc', 0.345),
+                MultiIndex([(                          'NaT', 'abc', 0.345),
                             ('1970-01-01 00:00:00.000000001',  <NA>,  <NA>),
                             ('1970-01-01 00:00:00.000000002', 'xyz', 100.0),
                             ('1970-01-01 00:00:00.000000003',  <NA>,  10.0)],
@@ -1219,7 +1217,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": ["abc", None, "xyz", None],
                     "b": cudf.Series([None, 1, 2, 3], dtype="timedelta64[ns]"),
@@ -1230,7 +1228,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             .index,
             textwrap.dedent(
                 """
-                MultiIndex([('abc',                      '<NA>', 0.345),
+                MultiIndex([('abc',                         NaT, 0.345),
                             ( <NA>, '0 days 00:00:00.000000001',  <NA>),
                             ('xyz', '0 days 00:00:00.000000002', 100.0),
                             ( <NA>, '0 days 00:00:00.000000003',  10.0)],
@@ -1239,7 +1237,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": ["abc", None, "xyz", None],
                     "b": cudf.Series([None, 1, 2, 3], dtype="timedelta64[ns]"),
@@ -1259,7 +1257,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": [None, None, None, None],
                     "b": cudf.Series(
@@ -1272,16 +1270,16 @@ def test_multiindex_repr(pmi, max_seq_items):
             .index,
             textwrap.dedent(
                 """
-            MultiIndex([('<NA>', <NA>),
-                        ('<NA>', <NA>),
-                        ('<NA>', <NA>),
-                        ('<NA>', <NA>)],
+            MultiIndex([(NaT, <NA>),
+                        (NaT, <NA>),
+                        (NaT, <NA>),
+                        (NaT, <NA>)],
                     names=['b', 'a'])
             """
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": [1, 2, None, 3, 5],
                     "b": [
@@ -1311,7 +1309,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": [1, 2, None, 3, 5],
                     "b": [
@@ -1341,7 +1339,7 @@ def test_multiindex_repr(pmi, max_seq_items):
             ),
         ),
         (
-            cudf.DataFrame(
+            lambda: cudf.DataFrame(
                 {
                     "a": ["(abc", "2", None, "3", "5"],
                     "b": [
@@ -1373,7 +1371,7 @@ def test_multiindex_repr(pmi, max_seq_items):
     ],
 )
 def test_multiindex_null_repr(gdi, expected_repr):
-    actual_repr = repr(gdi)
+    actual_repr = repr(gdi())
 
     assert actual_repr.split() == expected_repr.split()
 
@@ -1489,3 +1487,32 @@ def test_repr_struct_after_concat():
     pdf = df.to_pandas()
 
     assert repr(df) == repr(pdf)
+
+
+def test_interval_index_repr():
+    pi = pd.Index(
+        [
+            np.nan,
+            pd.Interval(2.0, 3.0, closed="right"),
+            pd.Interval(3.0, 4.0, closed="right"),
+        ]
+    )
+    gi = cudf.from_pandas(pi)
+
+    assert repr(pi) == repr(gi)
+
+
+def test_unique_categories_repr():
+    pi = pd.CategoricalIndex(range(10_000))
+    gi = cudf.CategoricalIndex(range(10_000))
+    expected_repr = repr(pi)
+    actual_repr = repr(gi)
+    assert expected_repr == actual_repr
+
+
+@pytest.mark.parametrize("ordered", [True, False])
+def test_categorical_index_ordered(ordered):
+    pi = pd.CategoricalIndex(range(10), ordered=ordered)
+    gi = cudf.CategoricalIndex(range(10), ordered=ordered)
+
+    assert repr(pi) == repr(gi)

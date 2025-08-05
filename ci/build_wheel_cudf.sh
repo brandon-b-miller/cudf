@@ -1,26 +1,34 @@
 #!/bin/bash
-# Copyright (c) 2023, NVIDIA CORPORATION.
+# Copyright (c) 2023-2025, NVIDIA CORPORATION.
 
 set -euo pipefail
 
-source rapids-configure-sccache
-source rapids-date-string
+source rapids-init-pip
 
-# Use gha-tools rapids-pip-wheel-version to generate wheel version then
-# update the necessary files
-version_override="$(rapids-pip-wheel-version ${RAPIDS_DATE_STRING})"
+package_dir="python/cudf"
 
-RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen ${RAPIDS_CUDA_VERSION})"
+RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 
-ci/release/apply_wheel_modifications.sh ${version_override} "-${RAPIDS_PY_CUDA_SUFFIX}"
-echo "The package name and/or version was modified in the package source. The git diff is:"
-git diff
+# Downloads libcudf and pylibcudf wheels from this current build,
+# then ensures 'cudf' wheel builds always use the 'libcudf' and 'pylibcudf' just built in the same CI run.
+#
+# Using env variable PIP_CONSTRAINT (initialized by 'rapids-init-pip') is necessary to ensure the constraints
+# are used when creating the isolated build environment.
+LIBCUDF_WHEELHOUSE=$(RAPIDS_PY_WHEEL_NAME="libcudf_${RAPIDS_PY_CUDA_SUFFIX}" rapids-download-wheels-from-github cpp)
+PYLIBCUDF_WHEELHOUSE=$(RAPIDS_PY_WHEEL_NAME="pylibcudf_${RAPIDS_PY_CUDA_SUFFIX}" rapids-download-wheels-from-github python)
+echo "libcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo ${LIBCUDF_WHEELHOUSE}/libcudf_*.whl)" >> "${PIP_CONSTRAINT}"
+echo "pylibcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo ${PYLIBCUDF_WHEELHOUSE}/pylibcudf_*.whl)" >> "${PIP_CONSTRAINT}"
 
-cd python/cudf
+./ci/build_wheel.sh cudf ${package_dir}
 
-SKBUILD_CONFIGURE_OPTIONS="-DCUDF_BUILD_WHEELS=ON -DDETECT_CONDA_ENV=OFF" python -m pip wheel . -w dist -vvv --no-deps --disable-pip-version-check
+# repair wheels and write to the location that artifact-uploading code expects to find them
+python -m auditwheel repair \
+    --exclude libcudf.so \
+    --exclude libnvcomp.so \
+    --exclude libkvikio.so \
+    --exclude librapids_logger.so \
+    --exclude librmm.so \
+    -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \
+    ${package_dir}/dist/*
 
-mkdir -p final_dist
-python -m auditwheel repair -w final_dist dist/*
-
-RAPIDS_PY_WHEEL_NAME="cudf_${RAPIDS_PY_CUDA_SUFFIX}" rapids-upload-wheels-to-s3 final_dist
+./ci/validate_wheel.sh "${package_dir}" "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023, NVIDIA CORPORATION.
+ * Copyright (c) 2022-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@
  * @brief Class definition for cudf::structs_column_view.
  */
 
-namespace cudf {
+namespace CUDF_EXPORT cudf {
 
 /**
  * @addtogroup structs_classes
@@ -42,7 +42,7 @@ class structs_column_view : public column_view {
   // Foundation members:
   structs_column_view(structs_column_view const&) = default;  ///< Copy constructor
   structs_column_view(structs_column_view&&)      = default;  ///< Move constructor
-  ~structs_column_view()                          = default;
+  ~structs_column_view() override                 = default;
   /**
    * @brief Copy assignment operator
    *
@@ -87,7 +87,7 @@ class structs_column_view : public column_view {
    * the child columns when recursing.  Most functions operating in a recursive manner
    * on struct columns should be using `get_sliced_child()` instead of `child()`.
    *
-   * @throw cudf::logic error if this is an empty column
+   * @throw cudf::logic_error if this is an empty column
    *
    * @param index The index of the child column to return
    * @param stream The stream on which to perform the operation. Uses the default CUDF
@@ -96,6 +96,6 @@ class structs_column_view : public column_view {
    */
   [[nodiscard]] column_view get_sliced_child(
     int index, rmm::cuda_stream_view stream = cudf::get_default_stream()) const;
-};         // class structs_column_view;
+};  // class structs_column_view;
 /** @} */  // end of group
-}  // namespace cudf
+}  // namespace CUDF_EXPORT cudf

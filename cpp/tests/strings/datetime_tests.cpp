@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2023, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@
 #include <cudf_test/column_wrapper.hpp>
 
 #include <cudf/strings/convert/convert_datetime.hpp>
-#include <cudf/strings/convert/convert_durations.hpp>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/unary.hpp>
 #include <cudf/wrappers/durations.hpp>
@@ -59,8 +58,8 @@ TEST_F(StringsDatetimeTest, ToTimestamp)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(*results, expected);
 
   results = cudf::strings::is_timestamp(strings_view, "%Y-%m-%dT%H:%M:%SZ");
-  cudf::test::fixed_width_column_wrapper<bool> is_expected({1, 1, 0, 0, 1, 1, 1, 1},
-                                                           {1, 1, 0, 1, 1, 1, 1, 1});
+  cudf::test::fixed_width_column_wrapper<bool> is_expected(
+    {1, 1, 0, 0, 1, 1, 1, 1}, {true, true, false, true, true, true, true, true});
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(*results, is_expected);
 }
 
@@ -305,25 +304,27 @@ TEST_F(StringsDatetimeTest, ToTimestampSingleDigits)
 
 TEST_F(StringsDatetimeTest, IsTimestamp)
 {
-  cudf::test::strings_column_wrapper strings{"2020-10-07 13:02:03 1PM +0130",
-                                             "2020:10:07 01-02-03 1AM +0130",
-                                             "2020-10-7 11:02:03 11AM -1025",
-                                             "2020-13-07 01:02:03 1AM +0000",
-                                             "2020-10-32 01:32:03 1AM +0000",
-                                             "2020-10-07 25:02:03 1AM +0000",
-                                             "2020-10-07 01:62:03 1AM +0000",
-                                             "2020-10-07 01:02:63 1AM +0000",
-                                             "2020-02-29 01:32:03 1AM +0000",
-                                             "2020-02-30 01:32:03 01AM +0000",
-                                             "2020-00-31 01:32:03 1AM +0000",
-                                             "2020-02-00 02:32:03 2AM +0000",
-                                             "2022-08-24 02:32:60 2AM +0000",
-                                             "2020-2-9 9:12:13 9AM +1111"};
-  auto strings_view = cudf::strings_column_view(strings);
-  auto results      = cudf::strings::is_timestamp(strings_view, "%Y-%m-%d %H:%M:%S %I%p %z");
-  CUDF_TEST_EXPECT_COLUMNS_EQUAL(
-    *results,
-    cudf::test::fixed_width_column_wrapper<bool>{1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1});
+  auto const input   = cudf::test::strings_column_wrapper{"2020-10-07 13:02:03 1PM +0130",
+                                                        "2020:10:07 01-02-03 1AM +0130",
+                                                        "2020-10-7 11:02:03 11AM -1025",
+                                                        "2020-13-07 01:02:03 1AM +0000",
+                                                        "2020-10-32 01:32:03 1AM +0000",
+                                                        "2020-10-07 25:02:03 1AM +0000",
+                                                        "2020-10-07 01:62:03 1AM +0000",
+                                                        "2020-10-07 01:02:63 1AM +0000",
+                                                        "2020-02-29 01:32:03 1AM +0000",
+                                                        "2020-02-30 01:32:03 01AM +0000",
+                                                        "2020-00-31 01:32:03 1AM +0000",
+                                                        "2020-02-00 02:32:03 2AM +0000",
+                                                        "2022-08-24 02:32:60 2AM +0000",
+                                                        "2020-2-9 9:12:13 9AM +1111",
+                                                        "9999-08-24 02:32:06 2AM +0000",
+                                                        "20220-08-24 02:32:06 2AM +0000"};
+  auto const sv      = cudf::strings_column_view(input);
+  auto const results = cudf::strings::is_timestamp(sv, "%Y-%m-%d %H:%M:%S %I%p %z");
+  auto const expected =
+    cudf::test::fixed_width_column_wrapper<bool>{1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0};
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(*results, expected);
 }
 
 TEST_F(StringsDatetimeTest, FromTimestamp)
@@ -605,13 +606,11 @@ TEST_F(StringsDatetimeTest, FromTimestampAllSpecifiers)
 
 TEST_F(StringsDatetimeTest, ZeroSizeStringsColumn)
 {
-  cudf::column_view zero_size_column(
-    cudf::data_type{cudf::type_id::TIMESTAMP_SECONDS}, 0, nullptr, nullptr, 0);
-  auto results = cudf::strings::from_timestamps(zero_size_column);
+  auto const zero_size_column = cudf::make_empty_column(cudf::type_id::TIMESTAMP_SECONDS)->view();
+  auto results                = cudf::strings::from_timestamps(zero_size_column);
   cudf::test::expect_column_empty(results->view());
 
-  cudf::column_view zero_size_strings_column(
-    cudf::data_type{cudf::type_id::STRING}, 0, nullptr, nullptr, 0);
+  auto const zero_size_strings_column = cudf::make_empty_column(cudf::type_id::STRING)->view();
   results = cudf::strings::to_timestamps(cudf::strings_column_view(zero_size_strings_column),
                                          cudf::data_type{cudf::type_id::TIMESTAMP_SECONDS},
                                          "%Y");

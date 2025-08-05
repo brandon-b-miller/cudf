@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023, NVIDIA CORPORATION.
+ * Copyright (c) 2022-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,14 +23,57 @@
 #include <cudf/strings/udf/strip.cuh>
 #include <cudf/strings/udf/udf_string.cuh>
 
+#include <cooperative_groups.h>
 #include <cuda/atomic>
 
-#include <cooperative_groups.h>
+#include <nrt.cuh>
 
 #include <limits>
 #include <type_traits>
 
 using namespace cudf::strings::udf;
+
+/**
+ * @brief Destructor for a udf_string object.
+ *
+ * NRT API compatible destructor for udf_string objects.
+ *
+ * @param udf_str Pointer to the udf_string object to be destructed.
+ * @param size Size of the udf_string object (not used).
+ * @param dtor_info Additional information for the destructor (not used).
+ */
+__device__ void udf_str_dtor(void* udf_str, size_t size, void* dtor_info)
+{
+  auto ptr = reinterpret_cast<udf_string*>(udf_str);
+  ptr->~udf_string();
+}
+
+__device__ NRT_MemInfo* make_meminfo_for_new_udf_string(udf_string* udf_str)
+{
+  // only used in the context of this function
+  struct mi_str_allocation {
+    NRT_MemInfo mi;
+    udf_string st;
+  };
+
+  mi_str_allocation* mi_and_str = (mi_str_allocation*)NRT_Allocate(sizeof(mi_str_allocation));
+  if (mi_and_str != NULL) {
+    auto mi_ptr        = &(mi_and_str->mi);
+    udf_string* st_ptr = &(mi_and_str->st);
+
+    // udf_str_dtor can destruct the string without knowing the size
+    size_t size = 0;
+    NRT_MemInfo_init(mi_ptr, st_ptr, size, udf_str_dtor, NULL);
+
+    // copy the udf_string to the allocated heap space
+    udf_string* in_str_ptr = reinterpret_cast<udf_string*>(udf_str);
+    memcpy(st_ptr, in_str_ptr, sizeof(udf_string));
+    return mi_ptr;
+  } else {
+    __trap();
+    return nullptr;
+  }
+}
 
 extern "C" __device__ int len(int* nb_retval, void const* str)
 {
@@ -228,14 +271,13 @@ extern "C" __device__ int pycount(int* nb_retval, void const* str, void const* s
   return 0;
 }
 
-extern "C" __device__ int udf_string_from_string_view(int* nb_retbal,
+extern "C" __device__ int udf_string_from_string_view(void** out_meminfo,
                                                       void const* str,
                                                       void* udf_str)
 {
   auto str_view_ptr = reinterpret_cast<cudf::string_view const*>(str);
-  auto udf_str_ptr  = new (udf_str) udf_string;
-  *udf_str_ptr      = udf_string(*str_view_ptr);
-
+  auto udf_str_ptr  = new (udf_str) udf_string(*str_view_ptr);
+  *out_meminfo      = make_meminfo_for_new_udf_string(udf_str_ptr);
   return 0;
 }
 
@@ -244,62 +286,56 @@ extern "C" __device__ int string_view_from_udf_string(int* nb_retval,
                                                       void* str)
 {
   auto udf_str_ptr = reinterpret_cast<udf_string const*>(udf_str);
-  auto sv_ptr      = new (str) cudf::string_view;
-  *sv_ptr          = cudf::string_view(*udf_str_ptr);
-
+  auto sv_ptr      = new (str) cudf::string_view(*udf_str_ptr);
   return 0;
 }
 
-extern "C" __device__ int strip(int* nb_retval,
+extern "C" __device__ int strip(void** out_meminfo,
                                 void* udf_str,
                                 void* const* to_strip,
                                 void* const* strip_str)
 {
   auto to_strip_ptr  = reinterpret_cast<cudf::string_view const*>(to_strip);
   auto strip_str_ptr = reinterpret_cast<cudf::string_view const*>(strip_str);
-  auto udf_str_ptr   = new (udf_str) udf_string;
-
-  *udf_str_ptr = strip(*to_strip_ptr, *strip_str_ptr);
-
+  auto udf_str_ptr   = new (udf_str) udf_string(strip(*to_strip_ptr, *strip_str_ptr));
+  *out_meminfo       = make_meminfo_for_new_udf_string(udf_str_ptr);
   return 0;
 }
 
-extern "C" __device__ int lstrip(int* nb_retval,
+extern "C" __device__ int lstrip(void** out_meminfo,
                                  void* udf_str,
                                  void* const* to_strip,
                                  void* const* strip_str)
 {
   auto to_strip_ptr  = reinterpret_cast<cudf::string_view const*>(to_strip);
   auto strip_str_ptr = reinterpret_cast<cudf::string_view const*>(strip_str);
-  auto udf_str_ptr   = new (udf_str) udf_string;
-
-  *udf_str_ptr = strip(*to_strip_ptr, *strip_str_ptr, cudf::strings::side_type::LEFT);
-
+  auto udf_str_ptr =
+    new (udf_str) udf_string(strip(*to_strip_ptr, *strip_str_ptr, cudf::strings::side_type::LEFT));
+  *out_meminfo = make_meminfo_for_new_udf_string(udf_str_ptr);
   return 0;
 }
 
-extern "C" __device__ int rstrip(int* nb_retval,
+extern "C" __device__ int rstrip(void** out_meminfo,
                                  void* udf_str,
                                  void* const* to_strip,
                                  void* const* strip_str)
 {
   auto to_strip_ptr  = reinterpret_cast<cudf::string_view const*>(to_strip);
   auto strip_str_ptr = reinterpret_cast<cudf::string_view const*>(strip_str);
-  auto udf_str_ptr   = new (udf_str) udf_string;
-
-  *udf_str_ptr = strip(*to_strip_ptr, *strip_str_ptr, cudf::strings::side_type::RIGHT);
-
+  auto udf_str_ptr =
+    new (udf_str) udf_string(strip(*to_strip_ptr, *strip_str_ptr, cudf::strings::side_type::RIGHT));
+  *out_meminfo = make_meminfo_for_new_udf_string(udf_str_ptr);
   return 0;
 }
-extern "C" __device__ int upper(int* nb_retval,
+
+extern "C" __device__ int upper(void** out_meminfo,
                                 void* udf_str,
                                 void const* st,
                                 std::uintptr_t flags_table,
                                 std::uintptr_t cases_table,
                                 std::uintptr_t special_table)
 {
-  auto udf_str_ptr = new (udf_str) udf_string;
-  auto st_ptr      = reinterpret_cast<cudf::string_view const*>(st);
+  auto st_ptr = reinterpret_cast<cudf::string_view const*>(st);
 
   auto flags_table_ptr =
     reinterpret_cast<cudf::strings::detail::character_flags_table_type*>(flags_table);
@@ -310,20 +346,19 @@ extern "C" __device__ int upper(int* nb_retval,
 
   cudf::strings::udf::chars_tables tables{flags_table_ptr, cases_table_ptr, special_table_ptr};
 
-  *udf_str_ptr = to_upper(tables, *st_ptr);
-
+  auto udf_str_ptr = new (udf_str) udf_string(to_upper(tables, *st_ptr));
+  *out_meminfo     = make_meminfo_for_new_udf_string(udf_str_ptr);
   return 0;
 }
 
-extern "C" __device__ int lower(int* nb_retval,
+extern "C" __device__ int lower(void** out_meminfo,
                                 void* udf_str,
                                 void const* st,
                                 std::uintptr_t flags_table,
                                 std::uintptr_t cases_table,
                                 std::uintptr_t special_table)
 {
-  auto udf_str_ptr = new (udf_str) udf_string;
-  auto st_ptr      = reinterpret_cast<cudf::string_view const*>(st);
+  auto st_ptr = reinterpret_cast<cudf::string_view const*>(st);
 
   auto flags_table_ptr =
     reinterpret_cast<cudf::strings::detail::character_flags_table_type*>(flags_table);
@@ -333,33 +368,39 @@ extern "C" __device__ int lower(int* nb_retval,
     reinterpret_cast<cudf::strings::detail::special_case_mapping*>(special_table);
 
   cudf::strings::udf::chars_tables tables{flags_table_ptr, cases_table_ptr, special_table_ptr};
-  *udf_str_ptr = to_lower(tables, *st_ptr);
+
+  auto udf_str_ptr = new (udf_str) udf_string(to_lower(tables, *st_ptr));
+  *out_meminfo     = make_meminfo_for_new_udf_string(udf_str_ptr);
   return 0;
 }
 
-extern "C" __device__ int concat(int* nb_retval, void* udf_str, void* const* lhs, void* const* rhs)
+extern "C" __device__ int concat(void** out_meminfo,
+                                 void* udf_str,
+                                 void* const* lhs,
+                                 void* const* rhs)
 {
   auto lhs_ptr = reinterpret_cast<cudf::string_view const*>(lhs);
   auto rhs_ptr = reinterpret_cast<cudf::string_view const*>(rhs);
 
-  auto udf_str_ptr = new (udf_str) udf_string;
-
   udf_string result;
   result.append(*lhs_ptr).append(*rhs_ptr);
-  *udf_str_ptr = result;
+  auto udf_str_ptr = new (udf_str) udf_string(std::move(result));
+  *out_meminfo     = make_meminfo_for_new_udf_string(udf_str_ptr);
   return 0;
 }
 
-extern "C" __device__ int replace(
-  int* nb_retval, void* udf_str, void* const src, void* const to_replace, void* const replacement)
+extern "C" __device__ int replace(void** out_meminfo,
+                                  void* udf_str,
+                                  void* const src,
+                                  void* const to_replace,
+                                  void* const replacement)
 {
   auto src_ptr         = reinterpret_cast<cudf::string_view const*>(src);
   auto to_replace_ptr  = reinterpret_cast<cudf::string_view const*>(to_replace);
   auto replacement_ptr = reinterpret_cast<cudf::string_view const*>(replacement);
 
-  auto udf_str_ptr = new (udf_str) udf_string;
-  *udf_str_ptr     = replace(*src_ptr, *to_replace_ptr, *replacement_ptr);
-
+  auto udf_str_ptr = new (udf_str) udf_string(replace(*src_ptr, *to_replace_ptr, *replacement_ptr));
+  *out_meminfo     = make_meminfo_for_new_udf_string(udf_str_ptr);
   return 0;
 }
 
@@ -388,26 +429,30 @@ __device__ bool are_all_nans(cooperative_groups::thread_block const& block,
   return count == 0;
 }
 
-template <typename T>
-__device__ void device_sum(cooperative_groups::thread_block const& block,
-                           T const* data,
-                           int64_t size,
-                           T* sum)
+template <typename T, typename AccumT = std::conditional_t<std::is_integral_v<T>, int64_t, T>>
+__device__ AccumT device_sum(cooperative_groups::thread_block const& block,
+                             T const* data,
+                             int64_t size)
 {
-  T local_sum = 0;
+  __shared__ AccumT block_sum;
+  if (block.thread_rank() == 0) { block_sum = 0; }
+  block.sync();
+
+  AccumT local_sum = 0;
 
   for (int64_t idx = block.thread_rank(); idx < size; idx += block.size()) {
-    local_sum += data[idx];
+    local_sum += static_cast<AccumT>(data[idx]);
   }
 
-  cuda::atomic_ref<T, cuda::thread_scope_block> ref{*sum};
+  cuda::atomic_ref<AccumT, cuda::thread_scope_block> ref{block_sum};
   ref.fetch_add(local_sum, cuda::std::memory_order_relaxed);
 
   block.sync();
+  return block_sum;
 }
 
-template <typename T>
-__device__ T BlockSum(T const* data, int64_t size)
+template <typename T, typename AccumT = std::conditional_t<std::is_integral_v<T>, int64_t, T>>
+__device__ AccumT BlockSum(T const* data, int64_t size)
 {
   auto block = cooperative_groups::this_thread_block();
 
@@ -415,11 +460,7 @@ __device__ T BlockSum(T const* data, int64_t size)
     if (are_all_nans(block, data, size)) { return 0; }
   }
 
-  __shared__ T block_sum;
-  if (block.thread_rank() == 0) { block_sum = 0; }
-  block.sync();
-
-  device_sum<T>(block, data, size, &block_sum);
+  auto block_sum = device_sum<T>(block, data, size);
   return block_sum;
 }
 
@@ -428,46 +469,54 @@ __device__ double BlockMean(T const* data, int64_t size)
 {
   auto block = cooperative_groups::this_thread_block();
 
-  __shared__ T block_sum;
-  if (block.thread_rank() == 0) { block_sum = 0; }
+  auto block_sum = device_sum<T>(block, data, size);
+  return static_cast<double>(block_sum) / static_cast<double>(size);
+}
+
+template <typename T>
+__device__ double BlockCoVar(T const* lhs, T const* rhs, int64_t size)
+{
+  auto block = cooperative_groups::this_thread_block();
+
+  __shared__ double block_covar;
+
+  if (block.thread_rank() == 0) { block_covar = 0; }
   block.sync();
 
-  device_sum<T>(block, data, size, &block_sum);
-  return static_cast<double>(block_sum) / static_cast<double>(size);
+  auto block_sum_lhs = device_sum<T>(block, lhs, size);
+
+  auto const mu_l = static_cast<double>(block_sum_lhs) / static_cast<double>(size);
+  auto const mu_r = [=]() {
+    if (lhs == rhs) {
+      // If the lhs and rhs are the same, this is calculating variance.
+      // Thus we can assume mu_r = mu_l.
+      return mu_l;
+    } else {
+      auto block_sum_rhs = device_sum<T>(block, rhs, size);
+      return static_cast<double>(block_sum_rhs) / static_cast<double>(size);
+    }
+  }();
+
+  double local_covar = 0;
+
+  for (int64_t idx = block.thread_rank(); idx < size; idx += block.size()) {
+    local_covar += (static_cast<double>(lhs[idx]) - mu_l) * (static_cast<double>(rhs[idx]) - mu_r);
+  }
+
+  cuda::atomic_ref<double, cuda::thread_scope_block> ref{block_covar};
+  ref.fetch_add(local_covar, cuda::std::memory_order_relaxed);
+  block.sync();
+
+  if (block.thread_rank() == 0) { block_covar /= static_cast<double>(size - 1); }
+  block.sync();
+
+  return block_covar;
 }
 
 template <typename T>
 __device__ double BlockVar(T const* data, int64_t size)
 {
-  auto block = cooperative_groups::this_thread_block();
-
-  __shared__ double block_var;
-  __shared__ T block_sum;
-  if (block.thread_rank() == 0) {
-    block_var = 0;
-    block_sum = 0;
-  }
-  block.sync();
-
-  T local_sum      = 0;
-  double local_var = 0;
-
-  device_sum<T>(block, data, size, &block_sum);
-
-  auto const mean = static_cast<double>(block_sum) / static_cast<double>(size);
-
-  for (int64_t idx = block.thread_rank(); idx < size; idx += block.size()) {
-    auto const delta = static_cast<double>(data[idx]) - mean;
-    local_var += delta * delta;
-  }
-
-  cuda::atomic_ref<double, cuda::thread_scope_block> ref{block_var};
-  ref.fetch_add(local_var, cuda::std::memory_order_relaxed);
-  block.sync();
-
-  if (block.thread_rank() == 0) { block_var = block_var / static_cast<double>(size - 1); }
-  block.sync();
-  return block_var;
+  return BlockCoVar<T>(data, data, size);
 }
 
 template <typename T>
@@ -620,6 +669,18 @@ __device__ int64_t BlockIdxMin(T const* data, int64_t* index, int64_t size)
   return block_idx_min;
 }
 
+template <typename T>
+__device__ double BlockCorr(T* const lhs_ptr, T* const rhs_ptr, int64_t size)
+{
+  auto numerator   = BlockCoVar(lhs_ptr, rhs_ptr, size);
+  auto denominator = BlockStd(lhs_ptr, size) * BlockStd<T>(rhs_ptr, size);
+  if (denominator == 0.0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  } else {
+    return numerator / denominator;
+  }
+}
+
 extern "C" {
 #define make_definition(name, cname, type, return_type)                                          \
   __device__ int name##_##cname(return_type* numba_return_value, type* const data, int64_t size) \
@@ -630,17 +691,34 @@ extern "C" {
     return 0;                                                                                    \
   }
 
+make_definition(BlockSum, int32, int32_t, int64_t);
 make_definition(BlockSum, int64, int64_t, int64_t);
+make_definition(BlockSum, float32, float, float);
 make_definition(BlockSum, float64, double, double);
+
+make_definition(BlockMean, int32, int32_t, double);
 make_definition(BlockMean, int64, int64_t, double);
+make_definition(BlockMean, float32, float, float);
 make_definition(BlockMean, float64, double, double);
+
+make_definition(BlockStd, int32, int32_t, double);
 make_definition(BlockStd, int64, int64_t, double);
+make_definition(BlockStd, float32, float, float);
 make_definition(BlockStd, float64, double, double);
+
 make_definition(BlockVar, int64, int64_t, double);
+make_definition(BlockVar, int32, int32_t, double);
+make_definition(BlockVar, float32, float, float);
 make_definition(BlockVar, float64, double, double);
+
+make_definition(BlockMin, int32, int32_t, int32_t);
 make_definition(BlockMin, int64, int64_t, int64_t);
+make_definition(BlockMin, float32, float, float);
 make_definition(BlockMin, float64, double, double);
+
+make_definition(BlockMax, int32, int32_t, int32_t);
 make_definition(BlockMax, int64, int64_t, int64_t);
+make_definition(BlockMax, float32, float, float);
 make_definition(BlockMax, float64, double, double);
 #undef make_definition
 }
@@ -656,9 +734,31 @@ extern "C" {
     return 0;                                                                    \
   }
 
+make_definition_idx(BlockIdxMin, int32, int32_t);
 make_definition_idx(BlockIdxMin, int64, int64_t);
+make_definition_idx(BlockIdxMin, float32, float);
 make_definition_idx(BlockIdxMin, float64, double);
+
+make_definition_idx(BlockIdxMax, int32, int32_t);
 make_definition_idx(BlockIdxMax, int64, int64_t);
+make_definition_idx(BlockIdxMax, float32, float);
 make_definition_idx(BlockIdxMax, float64, double);
 #undef make_definition_idx
+}
+
+extern "C" {
+#define make_definition_corr(name, cname, type)                                 \
+  __device__ int name##_##cname##_##cname(                                      \
+    double* numba_return_value, type* const lhs, type* const rhs, int64_t size) \
+  {                                                                             \
+    double const res    = name<type>(lhs, rhs, size);                           \
+    *numba_return_value = res;                                                  \
+    __syncthreads();                                                            \
+    return 0;                                                                   \
+  }
+
+make_definition_corr(BlockCorr, int32, int32_t);
+make_definition_corr(BlockCorr, int64, int64_t);
+
+#undef make_definition_corr
 }

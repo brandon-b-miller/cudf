@@ -1,26 +1,17 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.
+# Copyright (c) 2020-2025, NVIDIA CORPORATION.
+from __future__ import annotations
 
+import decimal
 import functools
-import hashlib
 import os
 import traceback
 import warnings
-from functools import partial
-from typing import FrozenSet, Set, Union
+from typing import Any
 
 import numpy as np
-from nvtx import annotate
-
-import rmm
+import pandas as pd
 
 import cudf
-import cudf.api.types
-from cudf.core import column
-from cudf.core.buffer import as_buffer
-
-# The size of the mask in bytes
-mask_dtype = cudf.api.types.dtype(np.int32)
-mask_bitsize = mask_dtype.itemsize * 8
 
 # Mapping from ufuncs to the corresponding binary operators.
 _ufunc_binary_operations = {
@@ -118,8 +109,6 @@ _EQUALITY_OPS = {
     "__ge__",
 }
 
-_NVTX_COLORS = ["green", "blue", "purple", "rapids"]
-
 # The test root is set by pytest to support situations where tests are run from
 # a source tree on a built version of cudf.
 NO_EXTERNAL_ONLY_APIS = os.getenv("NO_EXTERNAL_ONLY_APIS")
@@ -162,8 +151,9 @@ def _external_only_api(func, alternative=""):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         # Check the immediately preceding frame to see if it's in cudf.
-        frame, lineno = next(traceback.walk_stack(None))
-        fn = frame.f_code.co_filename
+        pre_frame = traceback.extract_stack(limit=2)[0]
+        fn = pre_frame.filename
+        lineno = pre_frame.lineno
         if _cudf_root in fn and _tests_root not in fn:
             raise RuntimeError(
                 f"External-only API called in {fn} at line {lineno}. "
@@ -174,196 +164,21 @@ def _external_only_api(func, alternative=""):
     return wrapper
 
 
-def initfunc(f):
+def is_na_like(obj: Any) -> bool:
     """
-    Decorator for initialization functions that should
-    be run exactly once.
+    Check if `obj` is a cudf NA value,
+    i.e., None, cudf.NA or cudf.NaT
     """
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        if wrapper.initialized:
-            return
-        wrapper.initialized = True
-        return f(*args, **kwargs)
-
-    wrapper.initialized = False
-    return wrapper
+    return obj is None or obj is pd.NA or obj is pd.NaT
 
 
-def clear_cache():
-    """Clear all internal caches"""
-    cudf.Scalar._clear_instance_cache()
-
-
-class GetAttrGetItemMixin:
-    """This mixin changes `__getattr__` to attempt a `__getitem__` call.
-
-    Classes that include this mixin gain enhanced functionality for the
-    behavior of attribute access like `obj.foo`: if `foo` is not an attribute
-    of `obj`, obj['foo'] will be attempted, and the result returned.  To make
-    this behavior safe, classes that include this mixin must define a class
-    attribute `_PROTECTED_KEYS` that defines the attributes that are accessed
-    within `__getitem__`. For example, if `__getitem__` is defined as
-    `return self._data[key]`, we must define `_PROTECTED_KEYS={'_data'}`.
-    """
-
-    # Tracking of protected keys by each subclass is necessary to make the
-    # `__getattr__`->`__getitem__` call safe. See
-    # https://nedbatchelder.com/blog/201010/surprising_getattr_recursion.html  # noqa: E501
-    # for an explanation. In brief, defining the `_PROTECTED_KEYS` allows this
-    # class to avoid calling `__getitem__` inside `__getattr__` when
-    # `__getitem__` will internally again call `__getattr__`, resulting in an
-    # infinite recursion.
-    # This problem only arises when the copy protocol is invoked (e.g. by
-    # `copy.copy` or `pickle.dumps`), and could also be avoided by redefining
-    # methods involved with the copy protocol such as `__reduce__` or
-    # `__setstate__`, but this class may be used in complex multiple
-    # inheritance hierarchies that might also override serialization.  The
-    # solution here is a minimally invasive change that avoids such conflicts.
-    _PROTECTED_KEYS: Union[FrozenSet[str], Set[str]] = frozenset()
-
-    def __getattr__(self, key):
-        if key in self._PROTECTED_KEYS:
-            raise AttributeError
-        try:
-            return self[key]
-        except KeyError:
-            raise AttributeError(
-                f"{type(self).__name__} object has no attribute {key}"
-            )
-
-
-class NotIterable:
-    def __iter__(self):
-        """
-        Iteration is unsupported.
-
-        See :ref:`iteration <pandas-comparison/iteration>` for more
-        information.
-        """
-        raise TypeError(
-            f"{self.__class__.__name__} object is not iterable. "
-            f"Consider using `.to_arrow()`, `.to_pandas()` or `.values_host` "
-            f"if you wish to iterate over the values."
-        )
-
-
-def pa_mask_buffer_to_mask(mask_buf, size):
-    """
-    Convert PyArrow mask buffer to cuDF mask buffer
-    """
-    mask_size = cudf._lib.null_mask.bitmask_allocation_size_bytes(size)
-    if mask_buf.size < mask_size:
-        dbuf = rmm.DeviceBuffer(size=mask_size)
-        dbuf.copy_from_host(np.asarray(mask_buf).view("u1"))
-        return as_buffer(dbuf)
-    return as_buffer(mask_buf)
-
-
-def _isnat(val):
-    """Wraps np.isnat to return False instead of error on invalid inputs."""
-    if not isinstance(val, (np.datetime64, np.timedelta64, str)):
-        return False
-    else:
-        return val in {"NaT", "NAT"} or np.isnat(val)
-
-
-def _fillna_natwise(col):
-    # If the value we are filling is np.datetime64("NAT")
-    # we set the same mask as current column.
-    # However where there are "<NA>" in the
-    # columns, their corresponding locations
-    nat = cudf._lib.scalar._create_proxy_nat_scalar(col.dtype)
-    result = cudf._lib.replace.replace_nulls(col, nat)
-    return column.build_column(
-        data=result.base_data,
-        dtype=result.dtype,
-        size=result.size,
-        offset=result.offset,
-        children=result.base_children,
+def _is_null_host_scalar(slr: Any) -> bool:
+    # slr is NA like or NaT like
+    return (
+        is_na_like(slr)
+        or (isinstance(slr, (np.datetime64, np.timedelta64)) and np.isnat(slr))
+        or slr is pd.NaT
     )
-
-
-def search_range(x: int, ri: range, *, side: str) -> int:
-    """
-
-    Find insertion point in a range to maintain sorted order
-
-    Parameters
-    ----------
-    x
-        Integer to insert
-    ri
-        Range to insert into
-    side
-        Tie-breaking decision for the case that `x` is a member of the
-        range. If `"left"` then the insertion point is before the
-        entry, otherwise it is after.
-
-    Returns
-    -------
-    int
-        The insertion point
-
-    See Also
-    --------
-    numpy.searchsorted
-
-    Notes
-    -----
-    Let ``p`` be the return value, then if ``side="left"`` the
-    following invariants are maintained::
-
-        all(x < n for n in ri[:p])
-        all(x >= n for n in ri[p:])
-
-    Conversely, if ``side="right"`` then we have::
-
-        all(x <= n for n in ri[:p])
-        all(x > n for n in ri[p:])
-
-    Examples
-    --------
-    For series: 1 4 7
-    >>> search_range(4, range(1, 10, 3), side="left")
-    1
-    >>> search_range(4, range(1, 10, 3), side="right")
-    2
-    """
-    assert side in {"left", "right"}
-    if flip := (ri.step < 0):
-        ri = ri[::-1]
-        shift = int(side == "right")
-    else:
-        shift = int(side == "left")
-
-    offset = (x - ri.start - shift) // ri.step + 1
-    if flip:
-        offset = len(ri) - offset
-    return max(min(len(ri), offset), 0)
-
-
-def _get_color_for_nvtx(name):
-    m = hashlib.sha256()
-    m.update(name.encode())
-    hash_value = int(m.hexdigest(), 16)
-    idx = hash_value % len(_NVTX_COLORS)
-    return _NVTX_COLORS[idx]
-
-
-def _cudf_nvtx_annotate(func, domain="cudf_python"):
-    """Decorator for applying nvtx annotations to methods in cudf."""
-    return annotate(
-        message=func.__qualname__,
-        color=_get_color_for_nvtx(func.__qualname__),
-        domain=domain,
-    )(func)
-
-
-_dask_cudf_nvtx_annotate = partial(
-    _cudf_nvtx_annotate, domain="dask_cudf_python"
-)
 
 
 def _warn_no_dask_cudf(fn):
@@ -384,3 +199,29 @@ def _warn_no_dask_cudf(fn):
         return fn(self)
 
     return wrapper
+
+
+def _is_same_name(left_name: Any, right_name: Any) -> bool:
+    # Internal utility to compare if two names are same.
+    with warnings.catch_warnings():
+        # numpy throws warnings while comparing
+        # NaT values with non-NaT values.
+        warnings.simplefilter("ignore")
+        try:
+            same = (left_name is right_name) or (left_name == right_name)
+            if not same:
+                if isinstance(left_name, decimal.Decimal) and isinstance(
+                    right_name, decimal.Decimal
+                ):
+                    return left_name.is_nan() and right_name.is_nan()
+                if isinstance(left_name, float) and isinstance(
+                    right_name, float
+                ):
+                    return np.isnan(left_name) and np.isnan(right_name)
+                if isinstance(left_name, np.datetime64) and isinstance(
+                    right_name, np.datetime64
+                ):
+                    return np.isnan(left_name) and np.isnan(right_name)
+            return same
+        except TypeError:
+            return False

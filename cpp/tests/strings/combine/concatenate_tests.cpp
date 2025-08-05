@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2023, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,6 @@
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/strings/combine.hpp>
 #include <cudf/strings/strings_column_view.hpp>
-#include <cudf/table/table.hpp>
 #include <cudf/types.hpp>
 
 #include <thrust/iterator/transform_iterator.h>
@@ -98,11 +97,11 @@ TEST_F(StringsCombineTest, Concatenate)
 TEST_F(StringsCombineTest, ConcatenateSkipNulls)
 {
   cudf::test::strings_column_wrapper strings1({"eee", "", "", "", "aa", "bbb", "ééé"},
-                                              {1, 0, 0, 1, 1, 1, 1});
+                                              {true, false, false, true, true, true, true});
   cudf::test::strings_column_wrapper strings2({"xyz", "", "d", "éa", "", "", "f"},
-                                              {1, 0, 1, 1, 1, 0, 1});
+                                              {true, false, true, true, true, false, true});
   cudf::test::strings_column_wrapper strings3({"q", "", "s", "t", "u", "", "w"},
-                                              {1, 1, 1, 1, 1, 0, 1});
+                                              {true, true, true, true, true, false, true});
 
   cudf::table_view table({strings1, strings2, strings3});
 
@@ -126,7 +125,8 @@ TEST_F(StringsCombineTest, ConcatenateSkipNulls)
   }
   {
     cudf::test::strings_column_wrapper expected(
-      {"eee+xyz+q", "", "", "+éa+t", "aa++u", "", "ééé+f+w"}, {1, 0, 0, 1, 1, 0, 1});
+      {"eee+xyz+q", "", "", "+éa+t", "aa++u", "", "ééé+f+w"},
+      {true, false, false, true, true, false, true});
     auto results = cudf::strings::concatenate(table,
                                               cudf::string_scalar("+"),
                                               cudf::string_scalar("", false),
@@ -149,8 +149,7 @@ TEST_F(StringsCombineTest, ConcatenateSkipNulls)
 
 TEST_F(StringsCombineTest, ConcatZeroSizeStringsColumns)
 {
-  cudf::column_view zero_size_strings_column(
-    cudf::data_type{cudf::type_id::STRING}, 0, nullptr, nullptr, 0);
+  auto const zero_size_strings_column = cudf::make_empty_column(cudf::type_id::STRING)->view();
   std::vector<cudf::column_view> strings_columns;
   strings_columns.push_back(zero_size_strings_column);
   strings_columns.push_back(zero_size_strings_column);
@@ -161,8 +160,8 @@ TEST_F(StringsCombineTest, ConcatZeroSizeStringsColumns)
 
 TEST_F(StringsCombineTest, SingleColumnErrorCheck)
 {
-  cudf::column_view col0(cudf::data_type{cudf::type_id::STRING}, 0, nullptr, nullptr, 0);
-  EXPECT_THROW(cudf::strings::concatenate(cudf::table_view{{col0}}), cudf::logic_error);
+  auto const col0 = cudf::make_empty_column(cudf::type_id::STRING);
+  EXPECT_THROW(cudf::strings::concatenate(cudf::table_view{{col0->view()}}), cudf::logic_error);
 }
 
 struct StringsConcatenateWithColSeparatorTest : public cudf::test::BaseFixture {};
@@ -180,7 +179,7 @@ TEST_F(StringsConcatenateWithColSeparatorTest, ExceptionTests)
   }
 
   {
-    cudf::column_view col0(cudf::data_type{cudf::type_id::STRING}, 0, nullptr, nullptr, 0);
+    auto const col0 = cudf::make_empty_column(cudf::type_id::STRING)->view();
     cudf::test::fixed_width_column_wrapper<int64_t> col1{{1}};
 
     EXPECT_THROW(
@@ -200,8 +199,7 @@ TEST_F(StringsConcatenateWithColSeparatorTest, ExceptionTests)
 
 TEST_F(StringsConcatenateWithColSeparatorTest, ZeroSizedColumns)
 {
-  cudf::column_view col0(cudf::data_type{cudf::type_id::STRING}, 0, nullptr, nullptr, 0);
-
+  auto const col0 = cudf::make_empty_column(cudf::type_id::STRING)->view();
   auto results =
     cudf::strings::concatenate(cudf::table_view{{col0}}, cudf::strings_column_view(col0));
   cudf::test::expect_column_empty(results->view());
@@ -504,7 +502,7 @@ TEST_F(StringsConcatenateWithColSeparatorTest, MultiColumnNonNullableStrings)
 {
   auto col0 =
     cudf::test::strings_column_wrapper({"eeexyz", "<null>", "éaff", "éééf", "", "", "", ""});
-  auto col1 = cudf::test::strings_column_wrapper({"foo", "nan", "", "", "NULL", "éaff", "", ""});
+  auto col1    = cudf::test::strings_column_wrapper({"foo", "nan", "", "", "NULL", "éaff", "", ""});
   auto sep_col = cudf::test::strings_column_wrapper({"", "~~~", "", "@", "", "+++", "", "^^^^"});
 
   // Every item (separator/column) is used, as everything is valid producing a non nullable column
