@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numba
-from numba import config as numba_config
+from numba.cuda import config as numba_config
 from packaging import version
 
 
