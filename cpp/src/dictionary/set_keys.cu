@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,8 +37,8 @@
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/exec_policy.hpp>
 
+#include <cuda/std/iterator>
 #include <thrust/binary_search.h>
-#include <thrust/distance.h>
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
 #include <thrust/iterator/counting_iterator.h>
@@ -61,11 +61,11 @@ namespace {
  */
 struct dispatch_compute_indices {
   template <typename Element>
-  std::enable_if_t<cudf::is_relationally_comparable<Element, Element>(), std::unique_ptr<column>>
-  operator()(dictionary_column_view const& input,
-             column_view const& new_keys,
-             rmm::cuda_stream_view stream,
-             rmm::device_async_resource_ref mr)
+  std::unique_ptr<column> operator()(dictionary_column_view const& input,
+                                     column_view const& new_keys,
+                                     rmm::cuda_stream_view stream,
+                                     rmm::device_async_resource_ref mr)
+    requires(cudf::is_relationally_comparable<Element, Element>())
   {
     auto dictionary_view = column_device_view::create(input.parent(), stream);
     auto dictionary_itr  = make_dictionary_iterator<Element>(*dictionary_view);
@@ -90,7 +90,7 @@ struct dispatch_compute_indices {
                         dictionary_itr,
                         dictionary_itr + input.size(),
                         result_itr,
-                        thrust::less<Element>());
+                        cuda::std::less<Element>());
 #else
     // There is a problem with thrust::lower_bound and the output_indexalator
     // https://github.com/NVIDIA/thrust/issues/1452; thrust team created nvbug 3322776
@@ -101,7 +101,7 @@ struct dispatch_compute_indices {
                       result_itr,
                       [begin, end] __device__(auto key) {
                         auto itr = thrust::lower_bound(thrust::seq, begin, end, key);
-                        return static_cast<size_type>(thrust::distance(begin, itr));
+                        return static_cast<size_type>(cuda::std::distance(begin, itr));
                       });
 #endif
     result->set_null_count(0);
@@ -110,8 +110,8 @@ struct dispatch_compute_indices {
   }
 
   template <typename Element, typename... Args>
-  std::enable_if_t<!cudf::is_relationally_comparable<Element, Element>(), std::unique_ptr<column>>
-  operator()(Args&&...)
+  std::unique_ptr<column> operator()(Args&&...)
+    requires(!cudf::is_relationally_comparable<Element, Element>())
   {
     CUDF_FAIL("dictionary set_keys not supported for this column type");
   }

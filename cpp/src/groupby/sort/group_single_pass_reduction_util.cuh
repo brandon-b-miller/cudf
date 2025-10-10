@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include "reductions/nested_type_minmax_util.cuh"
+#include "reductions/nested_types_extrema_utils.cuh"
 
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_factories.hpp>
@@ -152,7 +152,6 @@ struct group_reduction_functor<
                                         cudf::device_span<cudf::size_type const> group_labels,
                                         rmm::cuda_stream_view stream,
                                         rmm::device_async_resource_ref mr)
-
   {
     using SourceDType = device_storage_type_t<T>;
     using ResultType  = cudf::detail::target_type_t<T, K>;
@@ -175,7 +174,7 @@ struct group_reduction_functor<
                             inp_iter,
                             thrust::make_discard_iterator(),
                             out_iter,
-                            thrust::equal_to{},
+                            cuda::std::equal_to{},
                             binop);
     };
 
@@ -201,7 +200,7 @@ struct group_reduction_functor<
       rmm::device_uvector<bool> validity(num_groups, stream);
       do_reduction(cudf::detail::make_validity_iterator(*d_values_ptr),
                    validity.begin(),
-                   thrust::logical_or{});
+                   cuda::std::logical_or{});
 
       auto [null_mask, null_count] =
         cudf::detail::valid_if(validity.begin(), validity.end(), cuda::std::identity{}, stream, mr);
@@ -238,14 +237,14 @@ struct group_reduction_functor<
                             inp_iter,
                             thrust::make_discard_iterator(),
                             out_iter,
-                            thrust::equal_to{},
+                            cuda::std::equal_to{},
                             binop);
     };
 
     auto const count_iter   = thrust::make_counting_iterator<ResultType>(0);
     auto const result_begin = result->mutable_view().template begin<ResultType>();
     auto const binop_generator =
-      cudf::reduction::detail::comparison_binop_generator::create<K>(values, stream);
+      cudf::reduction::detail::arg_minmax_binop_generator::create<K>(values, stream);
     do_reduction(count_iter, result_begin, binop_generator.binop());
 
     if (values.has_nulls()) {
@@ -254,7 +253,7 @@ struct group_reduction_functor<
       auto validity           = rmm::device_uvector<bool>(num_groups, stream);
       do_reduction(cudf::detail::make_validity_iterator(*d_values_ptr),
                    validity.begin(),
-                   thrust::logical_or{});
+                   cuda::std::logical_or{});
 
       auto [null_mask, null_count] =
         cudf::detail::valid_if(validity.begin(), validity.end(), cuda::std::identity{}, stream, mr);

@@ -17,32 +17,33 @@ repos:
         exclude: |
           (?x)^(
             ^cpp/cmake/thirdparty/patches/.*|
-            ^python/cudf/cudf/tests/data/subword_tokenizer_data/.*
+            ^python/cudf/cudf/tests/data/vocab.txt
           )
       - id: end-of-file-fixer
         exclude: |
           (?x)^(
             ^cpp/cmake/thirdparty/patches/.*|
-            ^python/cudf/cudf/tests/data/subword_tokenizer_data/.*
+            ^python/cudf/cudf/tests/data/vocab.txt
           )
   - repo: https://github.com/MarcoGorelli/cython-lint
-    rev: v0.16.6
+    rev: v0.16.7
     hooks:
       - id: cython-lint
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: 'v1.13.0'
     hooks:
       - id: mypy
-        additional_dependencies: [types-cachetools]
+        additional_dependencies: [types-cachetools, pyarrow-stubs]
         args: ["--config-file=pyproject.toml",
                "python/cudf/cudf",
                "python/custreamz/custreamz",
                "python/cudf_kafka/cudf_kafka",
                "python/cudf_polars/cudf_polars",
+               "python/cudf_polars/tests",
                "python/dask_cudf/dask_cudf"]
         pass_filenames: false
   - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v16.0.6
+    rev: v20.1.4
     hooks:
       - id: clang-format
         types_or: [c, c++, cuda]
@@ -54,7 +55,7 @@ repos:
             ^cpp/include/cudf_test/cxxopts.hpp
           )
   - repo: https://github.com/sirosen/texthooks
-    rev: 0.6.7
+    rev: 0.6.8
     hooks:
       - id: fix-smartquotes
         exclude: |
@@ -62,7 +63,7 @@ repos:
             ^cpp/src/io/parquet/ipc/Schema_generated.h|
             ^cpp/src/io/parquet/ipc/Message_generated.h|
             ^cpp/include/cudf_test/cxxopts.hpp|
-            ^python/cudf/cudf/tests/data/subword_tokenizer_data/.*|
+            ^python/cudf/cudf/tests/data/text/vocab.txt|
             ^python/cudf/cudf/tests/text/test_text_methods.py
           )
   - repo: local
@@ -107,10 +108,6 @@ repos:
           - cmakelang==0.6.13
         verbose: true
         require_serial: true
-        exclude: |
-          (?x)^(
-            cpp/cmake/Modules/FindCUDAToolkit[.]cmake$
-          )
       - id: cmake-lint
         name: cmake-lint
         entry: ./cpp/scripts/run-cmake-format.sh cmake-lint
@@ -122,10 +119,6 @@ repos:
           - cmakelang==0.6.13
         verbose: true
         require_serial: true
-        exclude: |
-          (?x)^(
-            cpp/cmake/Modules/FindCUDAToolkit[.]cmake$
-          )
       - id: doxygen-check
         name: doxygen-check
         entry: ./ci/checks/doxygen.sh
@@ -135,7 +128,7 @@ repos:
         pass_filenames: false
         verbose: true
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.3.0
+    rev: v2.4.1
     hooks:
       - id: codespell
         additional_dependencies: [tomli]
@@ -152,30 +145,28 @@ repos:
         args: ["--fix"]
       - id: ruff-format
   - repo: https://github.com/rapidsai/pre-commit-hooks
-    rev: v0.6.0
+    rev: v0.7.0
     hooks:
       - id: verify-copyright
         exclude: |
           (?x)^(
             cpp/include/cudf_test/cxxopts[.]hpp$|
             cpp/src/io/parquet/ipc/Message_generated[.]h$|
-            cpp/src/io/parquet/ipc/Schema_generated[.]h$|
-            cpp/cmake/Modules/FindCUDAToolkit[.]cmake$
+            cpp/src/io/parquet/ipc/Schema_generated[.]h$
           )
       - id: verify-alpha-spec
       - id: verify-codeowners
         args: [--fix, --project-prefix=cudf]
   - repo: https://github.com/rapidsai/dependency-file-generator
-    rev: v1.17.0
+    rev: v1.20.0
     hooks:
       - id: rapids-dependency-file-generator
-        args: ["--clean"]
+        args: ["--clean", "--warn-all", "--strict"]
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.10.0.1
     hooks:
       - id: shellcheck
         args: ["--severity=warning"]
-        files: ^ci/
 
 default_language_version:
       python: python3

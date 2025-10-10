@@ -193,6 +193,13 @@ rmm::device_uvector<cudf::size_type> null_roll_up(column_view const& input,
 {
   rmm::device_uvector<cudf::size_type> output(input.size(), stream);
 
+  // return all zeros for the non null case
+  if (!input.has_nulls()) {
+    thrust::fill(rmm::exec_policy(stream), output.begin(), output.end(), 0);
+    return output;
+  }
+
+
   auto device_view = column_device_view::create(input);
   auto invalid_it  = thrust::make_transform_iterator(
     cudf::detail::make_validity_iterator(*device_view),
@@ -222,7 +229,11 @@ rmm::device_uvector<T> make_bias_factors(column_view const& input,
 {
   rmm::device_uvector<T> bias_factors(input.size(), stream);
   auto device_view = column_device_view::create(input);
+
+
+  // failing line
   auto valid_it    = cudf::detail::make_validity_iterator(*device_view);
+
   auto nullcnt     = null_roll_up(input, stream);
   print_device_uvector(nullcnt, "makebiasfactors");
   rmm::device_uvector<pair_type<T>> pairs(input.size(), stream);
@@ -399,7 +410,6 @@ rmm::device_uvector<T> compute_ewmvar(column_view const& input,
   // get indices
   auto device_view = column_device_view::create(input);
   rmm::device_uvector<cudf::size_type> indices(input.size(), stream);
-
   if (input.has_nulls()) {
     auto valid_it = thrust::make_transform_iterator(
       cudf::detail::make_validity_iterator(*device_view),

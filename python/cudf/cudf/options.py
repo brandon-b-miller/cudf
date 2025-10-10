@@ -138,7 +138,7 @@ def describe_option(name: str | None = None):
     """
     names = _OPTIONS.keys() if name is None else [name]
     for name in names:
-        print(_build_option_description(name, _OPTIONS[name]))
+        print(_build_option_description(name, _OPTIONS[name]))  # noqa: T201
 
 
 def _make_contains_validator(valid_options: Container) -> Callable:
@@ -387,7 +387,7 @@ class option_context(ContextDecorator):
                 "[(pat, val), ...])."
             )
 
-        self.ops = tuple(zip(args[::2], args[1::2]))
+        self.ops = tuple(zip(args[::2], args[1::2], strict=True))
 
     def __enter__(self) -> None:
         self.undo = tuple((pat, get_option(pat)) for pat, _ in self.ops)

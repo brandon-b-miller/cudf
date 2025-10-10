@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (c) 2021-2024, NVIDIA CORPORATION.
+# Copyright (c) 2021-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
 # in compliance with the License. You may obtain a copy of the License at
@@ -23,6 +23,7 @@ target_link_libraries(jitify_preprocess PUBLIC ${CMAKE_DL_LIBS})
 function(jit_preprocess_files)
   cmake_parse_arguments(ARG "" "SOURCE_DIRECTORY" "FILES" ${ARGN})
 
+  get_target_property(libcudacxx_raw_includes CCCL::libcudacxx INTERFACE_INCLUDE_DIRECTORIES)
   set(includes)
   foreach(inc IN LISTS libcudacxx_raw_includes CUDAToolkit_INCLUDE_DIRS)
     list(APPEND includes "-I${inc}")
@@ -31,6 +32,8 @@ function(jit_preprocess_files)
     set(ARG_OUTPUT ${CUDF_GENERATED_INCLUDE_DIR}/include/jit_preprocessed_files/${ARG_FILE}.jit.hpp)
     get_filename_component(jit_output_directory "${ARG_OUTPUT}" DIRECTORY)
     list(APPEND JIT_PREPROCESSED_FILES "${ARG_OUTPUT}")
+
+    get_filename_component(ARG_OUTPUT_DIR "${ARG_OUTPUT}" DIRECTORY)
 
     # Note: need to pass _FILE_OFFSET_BITS=64 in COMMAND due to a limitation in how conda builds
     # glibc
@@ -42,10 +45,10 @@ function(jit_preprocess_files)
       COMMAND ${CMAKE_COMMAND} -E make_directory "${jit_output_directory}"
       COMMAND
         "${CMAKE_COMMAND}" -E env LD_LIBRARY_PATH=${CUDAToolkit_LIBRARY_DIR}
-        $<TARGET_FILE:jitify_preprocess> ${ARG_FILE} -o
-        ${CUDF_GENERATED_INCLUDE_DIR}/include/jit_preprocessed_files -i -m -std=c++17
-        -remove-unused-globals -D_FILE_OFFSET_BITS=64 -D__CUDACC_RTC__ -I${CUDF_SOURCE_DIR}/include
-        -I${CUDF_SOURCE_DIR}/src ${includes} --no-preinclude-workarounds --no-replace-pragma-once
+        $<TARGET_FILE:jitify_preprocess> ${ARG_FILE} -o ${ARG_OUTPUT_DIR} -i -std=c++20
+        -remove-unused-globals -D_FILE_OFFSET_BITS=64 -D__CUDACC_RTC__ -DCUDF_RUNTIME_JIT
+        -I${CUDF_SOURCE_DIR}/include -I${CUDF_SOURCE_DIR}/src ${includes}
+        --no-preinclude-workarounds --no-replace-pragma-once --diag-suppress=47 --device-int128
       COMMENT "Custom command to JIT-compile files."
     )
   endforeach()
@@ -60,8 +63,8 @@ if(NOT (EXISTS "${CUDF_GENERATED_INCLUDE_DIR}/include"))
 endif()
 
 jit_preprocess_files(
-  SOURCE_DIRECTORY ${CUDF_SOURCE_DIR}/src FILES binaryop/jit/kernel.cu transform/jit/kernel.cu
-  rolling/jit/kernel.cu
+  SOURCE_DIRECTORY ${CUDF_SOURCE_DIR}/src FILES binaryop/jit/kernel.cu rolling/jit/kernel.cu
+  stream_compaction/filter/jit/kernel.cu transform/jit/kernel.cu
 )
 
 add_custom_target(

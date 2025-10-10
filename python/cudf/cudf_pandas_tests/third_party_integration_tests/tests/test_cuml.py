@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2024, NVIDIA CORPORATION.
+# Copyright (c) 2023-2025, NVIDIA CORPORATION.
 import cupy as cp
 import numpy as np
 import pandas as pd
@@ -30,7 +30,7 @@ def assert_cuml_equal(expect, got):
         np.testing.assert_allclose(expect, got)
     elif isinstance(expect, tuple) and isinstance(got, tuple):
         assert len(expect) == len(got)
-        for e, g in zip(expect, got):
+        for e, g in zip(expect, got, strict=True):
             assert_cuml_equal(e, g)
     elif isinstance(expect, pd.DataFrame):
         assert pd.testing.assert_frame_equal(expect, got)

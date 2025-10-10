@@ -25,11 +25,11 @@
 #include <cudf/detail/groupby/sort_helper.hpp>
 #include <cudf/detail/iterator.cuh>
 #include <cudf/detail/labeling/label_segments.cuh>
+#include <cudf/detail/row_operator/row_operators.cuh>
 #include <cudf/detail/scatter.hpp>
 #include <cudf/detail/sequence.hpp>
 #include <cudf/detail/sorting.hpp>
 #include <cudf/strings/string_view.hpp>
-#include <cudf/table/experimental/row_operators.cuh>
 #include <cudf/table/table_device_view.cuh>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/traits.hpp>
@@ -38,7 +38,7 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/functional>
-#include <thrust/distance.h>
+#include <cuda/std/iterator>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/unique.h>
@@ -143,7 +143,7 @@ sort_groupby_helper::index_vector const& sort_groupby_helper::group_offsets(
   // This way, a 2nd (parallel) call to this will not be given a partially created object.
   auto group_offsets = std::make_unique<index_vector>(size + 1, stream);
 
-  auto const comparator = cudf::experimental::row::equality::self_comparator{_keys, stream};
+  auto const comparator = cudf::detail::row::equality::self_comparator{_keys, stream};
 
   auto const sorted_order = key_sort_order(stream).data<size_type>();
   decltype(group_offsets->begin()) result_end;
@@ -176,7 +176,7 @@ sort_groupby_helper::index_vector const& sort_groupby_helper::group_offsets(
                                      permuted_row_equality_comparator(d_key_equal, sorted_order));
   }
 
-  auto const num_groups = thrust::distance(group_offsets->begin(), result_end);
+  auto const num_groups = cuda::std::distance(group_offsets->begin(), result_end);
   group_offsets->set_element_async(num_groups, size, stream);
   group_offsets->resize(num_groups + 1, stream);
 

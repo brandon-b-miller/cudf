@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,8 +35,8 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/functional>
+#include <cuda/std/iterator>
 #include <thrust/binary_search.h>
-#include <thrust/distance.h>
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
 #include <thrust/iterator/counting_iterator.h>
@@ -118,7 +118,7 @@ struct compute_children_offsets_fn {
       [](auto lhs, auto rhs) {
         return offsets_pair{lhs.first + rhs.first, lhs.second + rhs.second};
       });
-    return cudf::detail::make_device_uvector_sync(
+    return cudf::detail::make_device_uvector(
       offsets, stream, cudf::get_current_device_resource_ref());
   }
 
@@ -135,14 +135,14 @@ struct compute_children_offsets_fn {
  */
 struct dispatch_compute_indices {
   template <typename Element>
-  std::enable_if_t<cudf::is_relationally_comparable<Element, Element>(), std::unique_ptr<column>>
-  operator()(column_view const& all_keys,
-             column_view const& all_indices,
-             column_view const& new_keys,
-             offsets_pair const* d_offsets,
-             size_type const* d_map_to_keys,
-             rmm::cuda_stream_view stream,
-             rmm::device_async_resource_ref mr)
+  std::unique_ptr<column> operator()(column_view const& all_keys,
+                                     column_view const& all_indices,
+                                     column_view const& new_keys,
+                                     offsets_pair const* d_offsets,
+                                     size_type const* d_map_to_keys,
+                                     rmm::cuda_stream_view stream,
+                                     rmm::device_async_resource_ref mr)
+    requires(cudf::is_relationally_comparable<Element, Element>())
   {
     auto keys_view     = column_device_view::create(all_keys, stream);
     auto indices_view  = column_device_view::create(all_indices, stream);
@@ -179,7 +179,7 @@ struct dispatch_compute_indices {
                         all_itr,
                         all_itr + all_indices.size(),
                         result_itr,
-                        thrust::less<Element>());
+                        cuda::std::less<Element>());
 #else
     // There is a problem with thrust::lower_bound and the output_indexalator.
     // https://github.com/NVIDIA/thrust/issues/1452; thrust team created nvbug 3322776
@@ -190,15 +190,15 @@ struct dispatch_compute_indices {
                       result_itr,
                       [begin, end] __device__(auto key) {
                         auto itr = thrust::lower_bound(thrust::seq, begin, end, key);
-                        return static_cast<size_type>(thrust::distance(begin, itr));
+                        return static_cast<size_type>(cuda::std::distance(begin, itr));
                       });
 #endif
     return result;
   }
 
   template <typename Element, typename... Args>
-  std::enable_if_t<!cudf::is_relationally_comparable<Element, Element>(), std::unique_ptr<column>>
-  operator()(Args&&...)
+  std::unique_ptr<column> operator()(Args&&...)
+    requires(!cudf::is_relationally_comparable<Element, Element>())
   {
     CUDF_FAIL("dictionary concatenate not supported for this column type");
   }

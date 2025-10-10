@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-#include "nanoarrow_utils.hpp"
-
 #include <cudf_test/base_fixture.hpp>
 #include <cudf_test/column_wrapper.hpp>
+#include <cudf_test/nanoarrow_utils.hpp>
 #include <cudf_test/type_lists.hpp>
 
 #include <cudf/column/column.hpp>
@@ -60,7 +59,7 @@ get_nanoarrow_cudf_table(cudf::size_type length)
   auto list_offsets_column = cudf::test::fixed_width_column_wrapper<int32_t>(
     test_data.list_offsets.begin(), test_data.list_offsets.end());
   auto [list_mask, list_nulls] = cudf::bools_to_mask(cudf::test::fixed_width_column_wrapper<bool>(
-    test_data.bool_data_validity.begin(), test_data.bool_data_validity.end()));
+    test_data.list_validity.begin(), test_data.list_validity.end()));
   columns.emplace_back(cudf::make_lists_column(length,
                                                list_offsets_column.release(),
                                                list_child_column.release(),
@@ -354,6 +353,24 @@ TEST_F(ToArrowDeviceTest, EmptyTable)
   ASSERT_CUDA_SUCCEEDED(
     cudaEventSynchronize(*reinterpret_cast<cudaEvent_t*>(got_arrow_device->sync_event)));
   compare_arrays(schema.get(), arr.get(), &got_arrow_device->array);
+}
+
+TEST_F(ToArrowDeviceTest, EmptyDictionary)
+{
+  auto empty = cudf::make_empty_column(cudf::type_id::DICTIONARY32);
+  auto meta  = std::vector<cudf::column_metadata>({cudf::column_metadata{"d"}});
+
+  auto got_arrow_schema = cudf::to_arrow_schema(cudf::table_view({empty->view()}), meta);
+  ASSERT_EQ(got_arrow_schema->n_children, 1);
+  auto dictionary_schema = got_arrow_schema->children[0]->dictionary;
+  ASSERT_NE(dictionary_schema, nullptr);
+  EXPECT_EQ(dictionary_schema->n_children, 0);
+
+  auto got_arrow_device = cudf::to_arrow_device(cudf::table_view({empty->view()}));
+  ASSERT_EQ(got_arrow_device->array.n_children, 1);
+  auto dictionary = got_arrow_device->array.children[0]->dictionary;
+  ASSERT_NE(dictionary, nullptr);
+  EXPECT_EQ(dictionary->n_children, 0);
 }
 
 TEST_F(ToArrowDeviceTest, DateTimeTable)

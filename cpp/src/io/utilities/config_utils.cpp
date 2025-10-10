@@ -36,10 +36,10 @@ void set_up_kvikio()
     cudaFree(nullptr);
 
     auto const compat_mode = kvikio::getenv_or("KVIKIO_COMPAT_MODE", kvikio::CompatMode::ON);
-    kvikio::defaults::compat_mode_reset(compat_mode);
+    kvikio::defaults::set_compat_mode(compat_mode);
 
     auto const nthreads = getenv_or<unsigned int>("KVIKIO_NTHREADS", 4u);
-    kvikio::defaults::thread_pool_nthreads_reset(nthreads);
+    kvikio::defaults::set_thread_pool_nthreads(nthreads);
   });
 }
 
@@ -58,7 +58,7 @@ enum class usage_policy : uint8_t { OFF, STABLE, ALWAYS };
  */
 usage_policy get_env_policy()
 {
-  static auto const env_val = getenv_or<std::string>("LIBCUDF_NVCOMP_POLICY", "STABLE");
+  auto const env_val = getenv_or<std::string>("LIBCUDF_NVCOMP_POLICY", "STABLE");
   if (env_val == "OFF") return usage_policy::OFF;
   if (env_val == "STABLE") return usage_policy::STABLE;
   if (env_val == "ALWAYS") return usage_policy::ALWAYS;

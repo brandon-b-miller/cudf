@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include "reductions/nested_type_minmax_util.cuh"
+#include "reductions/nested_types_extrema_utils.cuh"
 
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_factories.hpp>
@@ -37,6 +37,7 @@
 #include <rmm/device_uvector.hpp>
 #include <rmm/exec_policy.hpp>
 
+#include <cuda/std/functional>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/scan.h>
@@ -122,7 +123,7 @@ struct group_scan_functor<K, T, std::enable_if_t<is_group_scan_supported<K, T>()
                                     group_labels.end(),
                                     inp_iter,
                                     out_iter,
-                                    thrust::equal_to{},
+                                    cuda::std::equal_to{},
                                     binop);
     };
 
@@ -167,7 +168,7 @@ struct group_scan_functor<K,
                                     group_labels.end(),
                                     inp_iter,
                                     out_iter,
-                                    thrust::equal_to{},
+                                    cuda::std::equal_to{},
                                     binop);
     };
 
@@ -203,13 +204,13 @@ struct group_scan_functor<K,
     auto gather_map = rmm::device_uvector<size_type>(values.size(), stream);
 
     auto const binop_generator =
-      cudf::reduction::detail::comparison_binop_generator::create<K>(values, stream);
+      cudf::reduction::detail::arg_minmax_binop_generator::create<K>(values, stream);
     thrust::inclusive_scan_by_key(rmm::exec_policy(stream),
                                   group_labels.begin(),
                                   group_labels.end(),
                                   thrust::make_counting_iterator<size_type>(0),
                                   gather_map.begin(),
-                                  thrust::equal_to{},
+                                  cuda::std::equal_to{},
                                   binop_generator.binop());
 
     //
@@ -233,17 +234,17 @@ struct group_scan_functor<K,
     // column to them.
     if (values.has_nulls()) {
       for (std::unique_ptr<column>& child : scanned_children) {
-        child = structs::detail::superimpose_nulls(
+        child = structs::detail::superimpose_and_sanitize_nulls(
           values.null_mask(), values.null_count(), std::move(child), stream, mr);
       }
     }
 
-    return make_structs_column(values.size(),
-                               std::move(scanned_children),
-                               values.null_count(),
-                               cudf::detail::copy_bitmask(values, stream, mr),
-                               stream,
-                               mr);
+    return create_structs_hierarchy(values.size(),
+                                    std::move(scanned_children),
+                                    values.null_count(),
+                                    cudf::detail::copy_bitmask(values, stream, mr),
+                                    stream,
+                                    mr);
   }
 };
 

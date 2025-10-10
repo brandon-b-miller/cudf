@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 import types
+from collections.abc import Callable
 from io import BytesIO, StringIO
 
 import cupy as cp
@@ -44,6 +45,7 @@ from cudf.pandas.fast_slow_proxy import (
     OOMFallbackError,
     TypeFallbackError,
     _Unusable,
+    as_proxy_object,
     is_proxy_object,
 )
 from cudf.testing import assert_eq
@@ -209,6 +211,9 @@ def test_index_generator():
     tm.assert_equal(pi, xi)
 
 
+@pytest.mark.filterwarnings(
+    "ignore:DataFrameGroupBy.apply operated on the grouping columns"
+)
 def test_groupby_apply_fallback(dataframe, groupby_udf):
     pdf, df = dataframe
     tm.assert_equal(
@@ -300,6 +305,9 @@ def test_df_from_series(series):
     tm.assert_frame_equal(pd.DataFrame(psr), xpd.DataFrame(sr))
 
 
+@pytest.mark.filterwarnings(
+    "ignore:Setting an item of incompatible dtype is deprecated"
+)
 def test_iloc_change_type(series):
     psr, sr = series
     psr.iloc[0] = "a"
@@ -439,26 +447,28 @@ def test_is_sparse():
     psa = pd.arrays.SparseArray([0, 0, 1, 0])
     xsa = xpd.arrays.SparseArray([0, 0, 1, 0])
 
-    assert pd.api.types.is_sparse(psa) == xpd.api.types.is_sparse(xsa)
+    assert isinstance(psa.dtype, pd.SparseDtype) == isinstance(
+        xsa.dtype, xpd.SparseDtype
+    )
 
 
 def test_is_file_like():
-    assert pd.api.types.is_file_like("a") == xpd.api.types.is_file_like("a")
-    assert pd.api.types.is_file_like(BytesIO()) == xpd.api.types.is_file_like(
+    assert pd.api.types.is_file_like("a") == xpd.api.types.is_file_like("a")  # noqa: TID251
+    assert pd.api.types.is_file_like(BytesIO()) == xpd.api.types.is_file_like(  # noqa: TID251
         BytesIO()
     )
     assert pd.api.types.is_file_like(
         StringIO("abc")
-    ) == xpd.api.types.is_file_like(StringIO("abc"))
+    ) == xpd.api.types.is_file_like(StringIO("abc"))  # noqa: TID251
 
 
 def test_is_re_compilable():
     assert pd.api.types.is_re_compilable(
         ".^"
-    ) == xpd.api.types.is_re_compilable(".^")
+    ) == xpd.api.types.is_re_compilable(".^")  # noqa: TID251
     assert pd.api.types.is_re_compilable(
         ".*"
-    ) == xpd.api.types.is_re_compilable(".*")
+    ) == xpd.api.types.is_re_compilable(".*")  # noqa: TID251
 
 
 def test_module_attribute_types():
@@ -477,6 +487,9 @@ def test_infer_freq():
     assert expected == got
 
 
+@pytest.mark.filterwarnings(
+    "ignore:DataFrameGroupBy.apply operated on the grouping columns"
+)
 def test_groupby_grouper_fallback(dataframe, groupby_udf):
     pdf, df = dataframe
     tm.assert_equal(
@@ -496,7 +509,7 @@ def test_options_mode():
 # Codecov and Profiler interfere with each-other,
 # hence we don't want to run code-cov on this test.
 @pytest.mark.no_cover
-def test_profiler():
+def test_cudf_pandas_profiler():
     pytest.importorskip("cudf")
 
     # test that the profiler correctly reports
@@ -706,10 +719,6 @@ def test_rolling_win_type():
     tm.assert_equal(result, expected)
 
 
-@pytest.mark.skipif(
-    version.parse(numba_version) < version.parse("0.59"),
-    reason="Requires Numba 0.59 to fix segfaults on ARM. See https://github.com/numba/llvmlite/pull/1009",
-)
 @pytest.mark.xfail(
     version.parse(numba_version) >= version.parse("0.59")
     and PANDAS_VERSION < version.parse("2.1"),
@@ -778,14 +787,14 @@ def test_chunked_json_reader(tmpdir, data):
         pd.read_json(file_path, lines=True, chunksize=1) as pd_reader,
         xpd.read_json(file_path, lines=True, chunksize=1) as xpd_reader,
     ):
-        for pd_chunk, xpd_chunk in zip(pd_reader, xpd_reader):
+        for pd_chunk, xpd_chunk in zip(pd_reader, xpd_reader, strict=True):
             tm.assert_equal(pd_chunk, xpd_chunk)
 
     with (
         pd.read_json(StringIO(data), lines=True, chunksize=1) as pd_reader,
         xpd.read_json(StringIO(data), lines=True, chunksize=1) as xpd_reader,
     ):
-        for pd_chunk, xpd_chunk in zip(pd_reader, xpd_reader):
+        for pd_chunk, xpd_chunk in zip(pd_reader, xpd_reader, strict=True):
             tm.assert_equal(pd_chunk, xpd_chunk)
 
 
@@ -805,14 +814,14 @@ def test_chunked_csv_reader(tmpdir, data):
         pd.read_csv(file_path, chunksize=1) as pd_reader,
         xpd.read_csv(file_path, chunksize=1) as xpd_reader,
     ):
-        for pd_chunk, xpd_chunk in zip(pd_reader, xpd_reader):
+        for pd_chunk, xpd_chunk in zip(pd_reader, xpd_reader, strict=True):
             tm.assert_equal(pd_chunk, xpd_chunk, check_index_type=False)
 
     with (
         pd.read_json(StringIO(data), lines=True, chunksize=1) as pd_reader,
         xpd.read_json(StringIO(data), lines=True, chunksize=1) as xpd_reader,
     ):
-        for pd_chunk, xpd_chunk in zip(pd_reader, xpd_reader):
+        for pd_chunk, xpd_chunk in zip(pd_reader, xpd_reader, strict=True):
             tm.assert_equal(pd_chunk, xpd_chunk, check_index_type=False)
 
 
@@ -926,7 +935,7 @@ def test_namedagg_namedtuple():
     result = df.groupby("kind").agg(
         min_height=pd.NamedAgg(column="height", aggfunc="min"),
         max_height=pd.NamedAgg(column="height", aggfunc="max"),
-        average_weight=pd.NamedAgg(column="weight", aggfunc=np.mean),
+        average_weight=pd.NamedAgg(column="weight", aggfunc="mean"),
     )
     expected = xpd.DataFrame(
         {
@@ -1175,6 +1184,9 @@ def test_index_new():
     tm.assert_equal(expected, got)
 
 
+@pytest.mark.filterwarnings(
+    "ignore:DataFrameGroupBy.apply operated on the grouping columns"
+)
 @pytest.mark.xfail(not LOADED, reason="Should not fail in accelerated mode")
 def test_groupby_apply_callable_referencing_pandas(dataframe):
     pdf, df = dataframe
@@ -1462,6 +1474,7 @@ def test_holidays_within_dates(holiday, start, expected):
     ) == [utc.localize(dt) for dt in expected]
 
 
+@pytest.mark.serial
 @pytest.mark.parametrize(
     "env_value",
     ["", "cuda", "pool", "async", "managed", "managed_pool", "abc"],
@@ -1587,19 +1600,31 @@ def test_arrow_string_arrays():
     pd_s = pd.Series(["a", "b", "c"])
 
     cu_arr = xpd.arrays.ArrowStringArray._from_sequence(
-        cu_s, dtype=xpd.StringDtype("pyarrow")
+        cu_s, dtype=xpd.StringDtype(storage="pyarrow")
     )
     pd_arr = pd.arrays.ArrowStringArray._from_sequence(
-        pd_s, dtype=pd.StringDtype("pyarrow")
+        pd_s, dtype=pd.StringDtype(storage="pyarrow")
     )
 
     tm.assert_equal(cu_arr, pd_arr)
 
+    xpd_pa_np_storage_type = (
+        xpd.StringDtype("pyarrow_numpy")
+        if PANDAS_VERSION < version.parse("2.3.1")
+        else pd.StringDtype(storage="pyarrow", na_value=np.nan)
+    )
+
+    pd_pa_np_storage_type = (
+        pd.StringDtype("pyarrow_numpy")
+        if PANDAS_VERSION < version.parse("2.3.1")
+        else pd.StringDtype(storage="pyarrow", na_value=np.nan)
+    )
+
     cu_arr = xpd.core.arrays.string_arrow.ArrowStringArray._from_sequence(
-        cu_s, dtype=xpd.StringDtype("pyarrow_numpy")
+        cu_s, dtype=xpd_pa_np_storage_type
     )
     pd_arr = pd.core.arrays.string_arrow.ArrowStringArray._from_sequence(
-        pd_s, dtype=pd.StringDtype("pyarrow_numpy")
+        pd_s, dtype=pd_pa_np_storage_type
     )
 
     tm.assert_equal(cu_arr, pd_arr)
@@ -1664,6 +1689,7 @@ def test_change_index_name(index):
         assert df.index.name == name
 
 
+@pytest.mark.flaky(reruns=5, delay=4)
 def test_notebook_slow_repr():
     notebook_filename = (
         os.path.dirname(os.path.abspath(__file__))
@@ -1733,6 +1759,9 @@ def test_numpy_ndarray_numba_ufunc(array):
     assert_eq(add_one_ufunc(arr1), add_one_ufunc(arr2))
 
 
+@pytest.mark.filterwarnings(
+    "ignore:Grid size:numba.core.errors.NumbaPerformanceWarning"
+)
 def test_numpy_ndarray_numba_cuda_ufunc(array):
     arr1, arr2 = array
 
@@ -1917,7 +1946,6 @@ def assert_functions_called(profiler, functions):
 
     # Get all called functions as (filename, lineno, func_name)
     called_functions = {func[2] for func in stats.stats.keys()}
-    print(called_functions)
     for func_str in functions:
         assert func_str in called_functions
 
@@ -1979,6 +2007,93 @@ def test_numpy_data_access():
     assert type(expected) is type(actual)
 
 
+@pytest.mark.parametrize(
+    "obj",
+    [
+        pd.DataFrame({"a": [1, 2, 3]}),
+        pd.Series([1, 2, 3]),
+        pd.Index([1, 2, 3]),
+        pd.Categorical([1, 2, 3]),
+        pd.to_datetime(["2021-01-01", "2021-01-02"]),
+        pd.to_timedelta(["1 days", "2 days"]),
+        xpd.DataFrame({"a": [1, 2, 3]}),
+        xpd.Series([1, 2, 3]),
+        xpd.Index([1, 2, 3]),
+        xpd.Categorical([1, 2, 3]),
+        xpd.to_datetime(["2021-01-01", "2021-01-02"]),
+        xpd.to_timedelta(["1 days", "2 days"]),
+        cudf.DataFrame({"a": [1, 2, 3]}),
+        cudf.Series([1, 2, 3]),
+        cudf.Index([1, 2, 3]),
+        cudf.Index([1, 2, 3], dtype="category"),
+        cudf.to_datetime(["2021-01-01", "2021-01-02"]),
+        cudf.Index([1, 2, 3], dtype="timedelta64[ns]"),
+        [1, 2, 3],
+        {"a": 1, "b": 2},
+        (1, 2, 3),
+    ],
+)
+def test_as_proxy_object(obj):
+    proxy_obj = as_proxy_object(obj)
+    if isinstance(
+        obj,
+        (
+            pd.DataFrame,
+            pd.Series,
+            pd.Index,
+            pd.Categorical,
+            xpd.DataFrame,
+            xpd.Series,
+            xpd.Index,
+            xpd.Categorical,
+            cudf.DataFrame,
+            cudf.Series,
+            cudf.Index,
+        ),
+    ):
+        assert is_proxy_object(proxy_obj)
+        if isinstance(proxy_obj, xpd.DataFrame):
+            tm.assert_frame_equal(proxy_obj, xpd.DataFrame(obj))
+        elif isinstance(proxy_obj, xpd.Series):
+            tm.assert_series_equal(proxy_obj, xpd.Series(obj))
+        elif isinstance(proxy_obj, xpd.Index):
+            tm.assert_index_equal(proxy_obj, xpd.Index(obj))
+        else:
+            tm.assert_equal(proxy_obj, obj)
+    else:
+        assert not is_proxy_object(proxy_obj)
+        assert proxy_obj == obj
+
+
+def test_as_proxy_object_doesnot_copy_series():
+    s = pd.Series([1, 2, 3])
+    proxy_obj = as_proxy_object(s)
+    s[0] = 10
+    assert proxy_obj[0] == 10
+    tm.assert_series_equal(s, proxy_obj)
+
+
+def test_as_proxy_object_doesnot_copy_dataframe():
+    df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+    proxy_obj = as_proxy_object(df)
+    df.iloc[0, 0] = 10
+    assert proxy_obj.iloc[0, 0] == 10
+    tm.assert_frame_equal(df, proxy_obj)
+
+
+def test_as_proxy_object_doesnot_copy_index():
+    idx = pd.Index([1, 2, 3])
+    proxy_obj = as_proxy_object(idx)
+    assert proxy_obj._fsproxy_wrapped is idx
+
+
+def test_as_proxy_object_no_op_for_intermediates():
+    s = pd.Series(["abc", "def", "ghi"])
+    str_attr = s.str
+    proxy_obj = as_proxy_object(str_attr)
+    assert proxy_obj is str_attr
+
+
 def test_pickle_round_trip_proxy_numpy_array(array):
     arr, proxy_arr = array
     pickled_arr = BytesIO()
@@ -1992,3 +2107,19 @@ def test_pickle_round_trip_proxy_numpy_array(array):
     np.testing.assert_equal(
         pickle.load(pickled_proxy_arr), pickle.load(pickled_arr)
     )
+
+
+def test_pandas_objects_not_callable():
+    series = xpd.Series([1, 2, 3])
+    dataframe = xpd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+    index = xpd.Index([1, 2, 3])
+    range_index = xpd.RangeIndex(start=0, stop=10, step=1)
+    assert not isinstance(series, Callable)
+    assert not isinstance(dataframe, Callable)
+    assert not isinstance(index, Callable)
+    assert not isinstance(range_index, Callable)
+
+    assert isinstance(xpd.Series, Callable)
+    assert isinstance(xpd.DataFrame, Callable)
+    assert isinstance(xpd.Index, Callable)
+    assert isinstance(xpd.RangeIndex, Callable)

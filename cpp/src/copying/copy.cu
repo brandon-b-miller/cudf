@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,8 +32,8 @@
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/device_uvector.hpp>
 
+#include <cuda/std/iterator>
 #include <thrust/copy.h>
-#include <thrust/distance.h>
 #include <thrust/iterator/counting_iterator.h>
 
 #include <stdexcept>
@@ -55,14 +55,16 @@ struct copy_if_else_functor_impl {
  * @brief Functor to fetch a device-view for the specified scalar/column_view.
  */
 struct get_iterable_device_view {
-  template <typename T, CUDF_ENABLE_IF(std::is_same_v<T, cudf::column_view>)>
+  template <typename T>
   auto operator()(T const& input, rmm::cuda_stream_view stream)
+    requires(std::is_same_v<T, cudf::column_view>)
   {
     return cudf::column_device_view::create(input, stream);
   }
 
-  template <typename T, CUDF_ENABLE_IF(std::is_same_v<T, cudf::scalar>)>
+  template <typename T>
   auto operator()(T const& input, rmm::cuda_stream_view)
+    requires(std::is_same_v<T, cudf::scalar>)
   {
     return &input;
   }
@@ -172,7 +174,7 @@ std::unique_ptr<column> scatter_gather_based_if_else(cudf::column_view const& lh
                                               gather_map.begin(),
                                               is_left);
 
-  gather_map.resize(thrust::distance(gather_map.begin(), gather_map_end), stream);
+  gather_map.resize(cuda::std::distance(gather_map.begin(), gather_map_end), stream);
 
   auto const scatter_src_lhs = cudf::detail::gather(table_view{std::vector<column_view>{lhs}},
                                                     gather_map,

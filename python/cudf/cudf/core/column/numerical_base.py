@@ -12,10 +12,11 @@ import pylibcudf as plc
 
 import cudf
 from cudf.core.buffer import Buffer, acquire_spill_lock
-from cudf.core.column.column import ColumnBase
+from cudf.core.column.column import ColumnBase, column_empty
 from cudf.core.missing import NA
 from cudf.core.mixins import Scannable
-from cudf.utils import cudautils
+from cudf.core.udf.utils import compile_udf
+from cudf.utils.dtypes import _get_nan_for_dtype
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -89,20 +90,20 @@ class NumericalBaseColumn(ColumnBase, Scannable):
         skipna = True if skipna is None else skipna
 
         if len(self) == 0 or self._can_return_nan(skipna=skipna):
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
 
         self = self.nans_to_nulls().dropna()
 
         if len(self) < 4:
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
 
         n = len(self)
         miu = self.mean()
-        m4_numerator = ((self - miu) ** self.normalize_binop_value(4)).sum()
+        m4_numerator = ((self - miu) ** 4).sum()
         V = self.var()
 
         if V == 0:
-            return 0
+            return np.float64(0)
 
         term_one_section_one = (n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3))
         term_one_section_two = m4_numerator / (V**2)
@@ -114,20 +115,20 @@ class NumericalBaseColumn(ColumnBase, Scannable):
         skipna = True if skipna is None else skipna
 
         if len(self) == 0 or self._can_return_nan(skipna=skipna):
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
 
         self = self.nans_to_nulls().dropna()
 
         if len(self) < 3:
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
 
         n = len(self)
         miu = self.mean()
-        m3 = (((self - miu) ** self.normalize_binop_value(3)).sum()) / n
+        m3 = (((self - miu) ** 3).sum()) / n
         m2 = self.var(ddof=0)
 
         if m2 == 0:
-            return 0
+            return np.float64(0)
 
         unbiased_coef = ((n * (n - 1)) ** 0.5) / (n - 2)
         skew = unbiased_coef * m3 / (m2 ** (3 / 2))
@@ -149,9 +150,7 @@ class NumericalBaseColumn(ColumnBase, Scannable):
         if len(self) == 0:
             result = cast(
                 NumericalBaseColumn,
-                cudf.core.column.column_empty(
-                    row_count=len(q), dtype=self.dtype
-                ),
+                column_empty(row_count=len(q), dtype=self.dtype),
             )
         else:
             no_nans = self.nans_to_nulls()
@@ -183,7 +182,7 @@ class NumericalBaseColumn(ColumnBase, Scannable):
                 except (TypeError, ValueError):
                     pass
             return (
-                cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+                _get_nan_for_dtype(self.dtype)
                 if scalar_result is NA
                 else scalar_result
             )
@@ -206,7 +205,7 @@ class NumericalBaseColumn(ColumnBase, Scannable):
             "var", skipna=skipna, min_count=min_count, ddof=ddof
         )
         if result is NA:
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
         return result
 
     def std(
@@ -219,22 +218,25 @@ class NumericalBaseColumn(ColumnBase, Scannable):
             "std", skipna=skipna, min_count=min_count, ddof=ddof
         )
         if result is NA:
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
         return result
 
     def median(self, skipna: bool | None = None) -> NumericalBaseColumn:
         skipna = True if skipna is None else skipna
 
         if self._can_return_nan(skipna=skipna):
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
 
         # enforce linear in case the default ever changes
-        return self.quantile(
+        result = self.quantile(
             np.array([0.5]),
             interpolation="linear",
             exact=True,
             return_scalar=True,
         )
+        if self.dtype.kind == "f":
+            result = self.dtype.type(result)
+        return result
 
     def cov(self, other: NumericalBaseColumn) -> float:
         if (
@@ -242,7 +244,7 @@ class NumericalBaseColumn(ColumnBase, Scannable):
             or len(other) == 0
             or (len(self) == 1 and len(other) == 1)
         ):
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
 
         result = (self - self.mean()) * (other - other.mean())
         cov_sample = result.sum() / (len(self) - 1)
@@ -250,13 +252,13 @@ class NumericalBaseColumn(ColumnBase, Scannable):
 
     def corr(self, other: NumericalBaseColumn) -> float:
         if len(self) == 0 or len(other) == 0:
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
 
         cov = self.cov(other)
         lhs_std, rhs_std = self.std(), other.std()
 
         if not cov or lhs_std == 0 or rhs_std == 0:
-            return cudf.utils.dtypes._get_nan_for_dtype(self.dtype)
+            return _get_nan_for_dtype(self.dtype)
         return cov / lhs_std / rhs_std
 
     def round(
@@ -285,7 +287,7 @@ class NumericalBaseColumn(ColumnBase, Scannable):
         if callable(unaryop):
             nb_type = numpy_support.from_dtype(self.dtype)
             nb_signature = (nb_type,)
-            compiled_op = cudautils.compile_udf(unaryop, nb_signature)
+            compiled_op = compile_udf(unaryop, nb_signature)
             np_dtype = np.dtype(compiled_op[1])
             return self.transform(compiled_op, np_dtype)
 

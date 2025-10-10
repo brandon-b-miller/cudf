@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/exec_policy.hpp>
 
-#include <thrust/distance.h>
+#include <cuda/std/iterator>
 #include <thrust/execution_policy.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/logical.h>
@@ -94,11 +94,11 @@ struct hex_to_integer_fn {
  * The output_column is expected to be one of the integer types only.
  */
 struct dispatch_hex_to_integers_fn {
-  template <typename IntegerType,
-            std::enable_if_t<cudf::is_integral_not_bool<IntegerType>()>* = nullptr>
+  template <typename IntegerType>
   void operator()(column_device_view const& strings_column,
                   mutable_column_view& output_column,
                   rmm::cuda_stream_view stream) const
+    requires(cudf::is_integral_not_bool<IntegerType>())
   {
     auto d_results = output_column.data<IntegerType>();
     thrust::transform(rmm::exec_policy(stream),
@@ -109,7 +109,8 @@ struct dispatch_hex_to_integers_fn {
   }
   // non-integer types throw an exception
   template <typename T, typename... Args>
-  std::enable_if_t<not cudf::is_integral_not_bool<T>(), void> operator()(Args&&...) const
+  void operator()(Args&&...) const
+    requires(not cudf::is_integral_not_bool<T>())
   {
     CUDF_FAIL("Output for hex_to_integers must be an integer type.");
   }
@@ -174,11 +175,11 @@ struct integer_to_hex_fn {
 };
 
 struct dispatch_integers_to_hex_fn {
-  template <typename IntegerType,
-            std::enable_if_t<cudf::is_integral_not_bool<IntegerType>()>* = nullptr>
+  template <typename IntegerType>
   std::unique_ptr<column> operator()(column_view const& input,
                                      rmm::cuda_stream_view stream,
                                      rmm::device_async_resource_ref mr) const
+    requires(cudf::is_integral_not_bool<IntegerType>())
   {
     auto const d_column = column_device_view::create(input, stream);
 
@@ -193,8 +194,8 @@ struct dispatch_integers_to_hex_fn {
   }
   // non-integer types throw an exception
   template <typename T, typename... Args>
-  std::enable_if_t<not cudf::is_integral_not_bool<T>(), std::unique_ptr<column>> operator()(
-    Args...) const
+  std::unique_ptr<column> operator()(Args...) const
+    requires(not cudf::is_integral_not_bool<T>())
   {
     CUDF_FAIL("integers_to_hex only supports integer type columns");
   }
@@ -252,9 +253,9 @@ std::unique_ptr<column> is_hex(strings_column_view const& strings,
                         return sv.length() > 1 && (sv.substr(0, 2) == string_view("0x", 2) ||
                                                    sv.substr(0, 2) == string_view("0X", 2));
                       };
-                      auto begin = d_str.begin() + (starts_with_0x(d_str) ? 2 : 0);
-                      auto end   = d_str.end();
-                      return (thrust::distance(begin, end) > 0) &&
+                      auto begin = d_str.data() + (starts_with_0x(d_str) ? 2 : 0);
+                      auto end   = begin + d_str.size_bytes();
+                      return (cuda::std::distance(begin, end) > 0) &&
                              thrust::all_of(thrust::seq, begin, end, [] __device__(auto chr) {
                                return (chr >= '0' && chr <= '9') || (chr >= 'A' && chr <= 'F') ||
                                       (chr >= 'a' && chr <= 'f');

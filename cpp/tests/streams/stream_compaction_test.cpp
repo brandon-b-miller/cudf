@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, NVIDIA CORPORATION.
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,9 @@
 #include <cudf_test/column_wrapper.hpp>
 #include <cudf_test/iterator_utilities.hpp>
 #include <cudf_test/table_utilities.hpp>
+#include <cudf_test/testing_main.hpp>
 
+#include <cudf/ast/expressions.hpp>
 #include <cudf/sorting.hpp>
 #include <cudf/stream_compaction.hpp>
 #include <cudf/table/table.hpp>
@@ -376,6 +378,39 @@ TEST_F(StreamCompactionTest, ApplyBooleanMask)
   CUDF_TEST_EXPECT_TABLES_EQUAL(expected, *result);
 }
 
+TEST_F(StreamCompactionTest, FilterUDF)
+{
+  auto const col      = int32s_col{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
+  auto col_ref_0      = cudf::ast::column_reference(0);
+  auto const expected = int32s_col{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}.release();
+  auto const result   = cudf::filter({col},
+                                   R"***(
+__device__ void filter(bool * out, int32_t a){
+  *out = a < 10;
+})***",
+                                     {col},
+                                   false,
+                                   std::nullopt,
+                                   cudf::null_aware::NO,
+                                   cudf::test::get_default_stream());
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(*expected, *result[0]);
+}
+
+TEST_F(StreamCompactionTest, FilterASTJit)
+{
+  auto const col  = int32s_col{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
+  auto col_ref_0  = cudf::ast::column_reference(0);
+  auto max_scalar = cudf::numeric_scalar<int32_t>(
+    10, true, cudf::test::get_default_stream(), cudf::get_current_device_resource_ref());
+  auto const max_literal = cudf::ast::literal(max_scalar);
+  auto expression = cudf::ast::operation(cudf::ast::ast_operator::LESS, col_ref_0, max_literal);
+  cudf::table_view input({col});
+  auto const col_expected = int32s_col{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+  cudf::table_view expected({col_expected});
+  auto const result = cudf::filter(input, expression, input, cudf::test::get_default_stream());
+  CUDF_TEST_EXPECT_TABLES_EQUAL(expected, *result);
+}
+
 TEST_F(StreamCompactionTest, UniqueCountColumn)
 {
   std::vector<int32_t> const input = {1, 3,  3,  4,  31, 1, 8,  2, 0, 4, 1,
@@ -456,3 +491,5 @@ TEST_F(StreamCompactionTest, DistinctCountTable)
     expected,
     cudf::distinct_count(input_table, null_equality::EQUAL, cudf::test::get_default_stream()));
 }
+
+CUDF_TEST_PROGRAM_MAIN()

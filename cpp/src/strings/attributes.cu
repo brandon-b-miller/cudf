@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,9 @@
 #include <cudf/detail/null_mask.hpp>
 #include <cudf/detail/nvtx/ranges.hpp>
 #include <cudf/detail/utilities/cuda.cuh>
+#include <cudf/detail/utilities/grid_1d.cuh>
 #include <cudf/strings/attributes.hpp>
+#include <cudf/strings/detail/attributes.hpp>
 #include <cudf/strings/detail/utf8.hpp>
 #include <cudf/strings/string_view.cuh>
 #include <cudf/strings/strings_column_view.hpp>
@@ -151,8 +153,9 @@ std::unique_ptr<column> count_characters_parallel(strings_column_view const& inp
   auto const d_strings = cudf::column_device_view::create(input.parent(), stream);
 
   // fill in the lengths
-  constexpr int block_size = 256;
-  cudf::detail::grid_1d grid{input.size() * cudf::detail::warp_size, block_size};
+  constexpr thread_index_type block_size = 256;
+  constexpr thread_index_type warp_size  = cudf::detail::warp_size;
+  cudf::detail::grid_1d grid{input.size() * warp_size, block_size};
   count_characters_parallel_fn<<<grid.num_blocks, grid.num_threads_per_block, 0, stream.value()>>>(
     *d_strings, d_lengths);
 
@@ -237,7 +240,7 @@ std::unique_ptr<column> code_points(strings_column_view const& input,
       if (!d_column.is_null(idx)) length = d_column.element<string_view>(idx).length();
       return length;
     }),
-    thrust::plus<size_type>());
+    cuda::std::plus<size_type>());
 
   offsets.set_element_to_zero_async(0, stream);
 

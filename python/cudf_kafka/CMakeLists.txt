@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (c) 2022-2024, NVIDIA CORPORATION.
+# Copyright (c) 2022-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
 # in compliance with the License. You may obtain a copy of the License at
@@ -12,15 +12,22 @@
 # the License.
 # =============================================================================
 
-cmake_minimum_required(VERSION 3.26.4 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.30.4 FATAL_ERROR)
 
-include(../../rapids_config.cmake)
+include(../../cmake/rapids_config.cmake)
 
 project(
   cudf-kafka-python
   VERSION "${RAPIDS_VERSION}"
   LANGUAGES CXX
 )
+
+# Set C++ standard to match other cudf Python packages
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Disable CMake's automatic module scanning for C++ files due to sccache bug with gcc>=14
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 find_package(cudf_kafka "${RAPIDS_VERSION}" REQUIRED)
 
@@ -35,7 +42,3 @@ include(rapids-cython-core)
 rapids_cython_init()
 
 add_subdirectory(cudf_kafka/_lib)
-
-if(DEFINED cython_lib_dir)
-  rapids_cython_add_rpath_entries(TARGET cudf_kafka PATHS "${cython_lib_dir}")
-endif()

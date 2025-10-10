@@ -15,18 +15,22 @@
  */
 
 #include "io/orc/orc.hpp"
+#include "io/utilities/getenv_or.hpp"
 
 #include <cudf/detail/iterator.cuh>
 #include <cudf/detail/nvtx/ranges.hpp>
+#include <cudf/detail/utilities/host_worker_pool.hpp>
 #include <cudf/io/avro.hpp>
 #include <cudf/io/csv.hpp>
 #include <cudf/io/data_sink.hpp>
 #include <cudf/io/datasource.hpp>
 #include <cudf/io/detail/avro.hpp>
+#include <cudf/io/detail/codec.hpp>
 #include <cudf/io/detail/csv.hpp>
 #include <cudf/io/detail/json.hpp>
 #include <cudf/io/detail/orc.hpp>
 #include <cudf/io/detail/parquet.hpp>
+#include <cudf/io/detail/utils.hpp>
 #include <cudf/io/json.hpp>
 #include <cudf/io/orc.hpp>
 #include <cudf/io/orc_metadata.hpp>
@@ -36,6 +40,7 @@
 #include <cudf/utilities/error.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <utility>
 
 namespace cudf::io {
@@ -45,7 +50,12 @@ compression_type infer_compression_type(compression_type compression, source_inf
 {
   if (compression != compression_type::AUTO) { return compression; }
 
-  if (info.type() != io_type::FILEPATH) { return compression_type::NONE; }
+  if (info.type() != io_type::FILEPATH) {
+    CUDF_LOG_WARN(
+      "Auto detection of compression type is supported only for file type buffers. For other "
+      "buffer types, AUTO compression type assumes uncompressed input.");
+    return compression_type::NONE;
+  }
 
   auto filepath = info.filepaths()[0];
 
@@ -65,6 +75,8 @@ compression_type infer_compression_type(compression_type compression, source_inf
   if (ext == "gz") { return compression_type::GZIP; }
   if (ext == "zip") { return compression_type::ZIP; }
   if (ext == "bz2") { return compression_type::BZIP2; }
+  if (ext == "zstd") { return compression_type::ZSTD; }
+  if (ext == "sz") { return compression_type::SNAPPY; }
   if (ext == "xz") { return compression_type::XZ; }
 
   return compression_type::NONE;
@@ -157,9 +169,26 @@ std::vector<std::unique_ptr<cudf::io::datasource>> make_datasources(source_info 
 {
   switch (info.type()) {
     case io_type::FILEPATH: {
-      auto sources = std::vector<std::unique_ptr<cudf::io::datasource>>();
-      for (auto const& filepath : info.filepaths()) {
-        sources.emplace_back(cudf::io::datasource::create(filepath, offset, max_size_estimate));
+      std::vector<std::unique_ptr<cudf::io::datasource>> sources;
+      sources.reserve(info.filepaths().size());
+      // Creating sources in a single thread is faster for a small number of sources
+      auto const pool_use_threshold =
+        getenv_or("LIBCUDF_DATASOURCE_PARALLEL_CREATION_THRESHOLD", 8ul);
+      if (info.filepaths().size() >= pool_use_threshold) {
+        std::vector<std::future<std::unique_ptr<cudf::io::datasource>>> source_tasks;
+        source_tasks.reserve(info.filepaths().size());
+        for (auto const& path : info.filepaths()) {
+          source_tasks.emplace_back(cudf::detail::host_worker_pool().submit_task(
+            [=] { return cudf::io::datasource::create(path, offset, max_size_estimate); }));
+        }
+        std::transform(
+          source_tasks.begin(), source_tasks.end(), std::back_inserter(sources), [](auto& task) {
+            return task.get();
+          });
+      } else {
+        for (auto const& filepath : info.filepaths()) {
+          sources.emplace_back(cudf::io::datasource::create(filepath, offset, max_size_estimate));
+        }
       }
       return sources;
     }
@@ -266,6 +295,28 @@ void write_csv(csv_writer_options const& options, rmm::cuda_stream_view stream)
     options.get_names(),
     options,
     stream);
+}
+
+bool is_supported_read_orc(compression_type compression)
+{
+  if (compression == compression_type::AUTO or compression == compression_type::NONE) {
+    return true;
+  }
+
+  return ((compression == compression_type::ZLIB or compression == compression_type::SNAPPY or
+           compression == compression_type::ZSTD or compression == compression_type::LZ4) and
+          detail::is_decompression_supported(compression));
+}
+
+bool is_supported_write_orc(compression_type compression)
+{
+  if (compression == compression_type::AUTO or compression == compression_type::NONE) {
+    return true;
+  }
+
+  return ((compression == compression_type::ZLIB or compression == compression_type::SNAPPY or
+           compression == compression_type::ZSTD or compression == compression_type::LZ4) and
+          detail::is_compression_supported(compression));
 }
 
 raw_orc_statistics read_raw_orc_statistics(source_info const& src_info,
@@ -542,6 +593,29 @@ void orc_chunked_writer::close()
 using namespace cudf::io::parquet::detail;
 namespace detail_parquet = cudf::io::parquet::detail;
 
+bool is_supported_read_parquet(compression_type compression)
+{
+  if (compression == compression_type::AUTO or compression == compression_type::NONE) {
+    return true;
+  }
+
+  return ((compression == compression_type::BROTLI or compression == compression_type::GZIP or
+           compression == compression_type::LZ4 or compression == compression_type::SNAPPY or
+           compression == compression_type::ZSTD) and
+          detail::is_decompression_supported(compression));
+}
+
+bool is_supported_write_parquet(compression_type compression)
+{
+  if (compression == compression_type::AUTO or compression == compression_type::NONE) {
+    return true;
+  }
+
+  return ((compression == compression_type::LZ4 or compression == compression_type::SNAPPY or
+           compression == compression_type::ZSTD) and
+          detail::is_compression_supported(compression));
+}
+
 table_with_metadata read_parquet(parquet_reader_options const& options,
                                  rmm::cuda_stream_view stream,
                                  rmm::device_async_resource_ref mr)
@@ -684,12 +758,12 @@ table_with_metadata chunked_parquet_reader::read_chunk() const
   return reader->read_chunk();
 }
 
-parquet_chunked_writer::parquet_chunked_writer() = default;
+chunked_parquet_writer::chunked_parquet_writer() = default;
 
 /**
- * @copydoc cudf::io::parquet_chunked_writer::parquet_chunked_writer
+ * @copydoc cudf::io::chunked_parquet_writer::chunked_parquet_writer
  */
-parquet_chunked_writer::parquet_chunked_writer(chunked_parquet_writer_options const& options,
+chunked_parquet_writer::chunked_parquet_writer(chunked_parquet_writer_options const& options,
                                                rmm::cuda_stream_view stream)
 {
   namespace io_detail = cudf::io::detail;
@@ -700,12 +774,12 @@ parquet_chunked_writer::parquet_chunked_writer(chunked_parquet_writer_options co
     std::move(sinks), options, io_detail::single_write_mode::NO, stream);
 }
 
-parquet_chunked_writer::~parquet_chunked_writer() = default;
+chunked_parquet_writer::~chunked_parquet_writer() = default;
 
 /**
- * @copydoc cudf::io::parquet_chunked_writer::write
+ * @copydoc cudf::io::chunked_parquet_writer::write
  */
-parquet_chunked_writer& parquet_chunked_writer::write(table_view const& table,
+chunked_parquet_writer& chunked_parquet_writer::write(table_view const& table,
                                                       std::vector<partition_info> const& partitions)
 {
   CUDF_FUNC_RANGE();
@@ -716,9 +790,9 @@ parquet_chunked_writer& parquet_chunked_writer::write(table_view const& table,
 }
 
 /**
- * @copydoc cudf::io::parquet_chunked_writer::close
+ * @copydoc cudf::io::chunked_parquet_writer::close
  */
-std::unique_ptr<std::vector<uint8_t>> parquet_chunked_writer::close(
+std::unique_ptr<std::vector<uint8_t>> chunked_parquet_writer::close(
   std::vector<std::string> const& column_chunks_file_path)
 {
   CUDF_FUNC_RANGE();
@@ -727,8 +801,10 @@ std::unique_ptr<std::vector<uint8_t>> parquet_chunked_writer::close(
 
 void parquet_reader_options::set_row_groups(std::vector<std::vector<size_type>> row_groups)
 {
-  if ((!row_groups.empty()) and ((_skip_rows != 0) or _num_rows.has_value())) {
-    CUDF_FAIL("row_groups can't be set along with skip_rows and num_rows");
+  if ((!row_groups.empty()) and
+      (_skip_rows != 0 or _num_rows.has_value() or _skip_bytes != 0 or _num_bytes.has_value())) {
+    CUDF_FAIL(
+      "row_groups can't be set along with skip_rows and num_rows or skip_bytes and num_bytes");
   }
 
   _row_groups = std::move(row_groups);
@@ -738,6 +814,8 @@ void parquet_reader_options::set_skip_rows(int64_t val)
 {
   CUDF_EXPECTS(val >= 0, "skip_rows cannot be negative");
   CUDF_EXPECTS(_row_groups.empty(), "skip_rows can't be set along with a non-empty row_groups");
+  CUDF_EXPECTS(_skip_bytes == 0 and not _num_bytes.has_value(),
+               "skip_rows can't be set along with skip_bytes or num_bytes");
 
   _skip_rows = val;
 }
@@ -746,8 +824,33 @@ void parquet_reader_options::set_num_rows(size_type val)
 {
   CUDF_EXPECTS(val >= 0, "num_rows cannot be negative");
   CUDF_EXPECTS(_row_groups.empty(), "num_rows can't be set along with a non-empty row_groups");
+  CUDF_EXPECTS(_skip_bytes == 0 and not _num_bytes.has_value(),
+               "num_rows can't be set along with skip_bytes or num_bytes");
 
   _num_rows = val;
+}
+
+void parquet_reader_options::set_skip_bytes(size_t val)
+{
+  CUDF_EXPECTS(val == 0 or std::cmp_equal(_source.num_sources(), 1),
+               "skip_bytes can only be set for single parquet source case");
+  CUDF_EXPECTS(val == 0 or (not _num_rows.has_value() and _skip_rows == 0),
+               "skip_bytes cannot be set along with skip_rows and num_rows");
+  CUDF_EXPECTS(val == 0 or _row_groups.empty(),
+               "skip_bytes can't be set along with a non-empty row_groups");
+
+  _skip_bytes = val;
+}
+
+void parquet_reader_options::set_num_bytes(size_t val)
+{
+  CUDF_EXPECTS(std::cmp_equal(_source.num_sources(), 1),
+               "num_bytes can only be set for single parquet source case");
+  CUDF_EXPECTS(not _num_rows.has_value() and _skip_rows == 0,
+               "num_bytes cannot be set along with skip_rows and num_rows");
+  CUDF_EXPECTS(_row_groups.empty(), "num_bytes can't be set along with a non-empty row_groups");
+
+  _num_bytes = val;
 }
 
 void parquet_writer_options_base::set_metadata(table_input_metadata metadata)

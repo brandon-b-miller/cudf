@@ -16,9 +16,7 @@
 
 #include "compact_protocol_reader.hpp"
 
-#include "parquet.hpp"
-#include "parquet_common.hpp"
-
+#include <cudf/io/parquet_schema.hpp>
 #include <cudf/utilities/error.hpp>
 
 #include <algorithm>
@@ -265,7 +263,7 @@ class parquet_field_string : public parquet_field {
   {
     assert_field_type(field_type, FieldType::BINARY);
     auto const n = cpr->get_u32();
-    CUDF_EXPECTS(n < static_cast<size_t>(cpr->m_end - cpr->m_cur), "string length mismatch");
+    CUDF_EXPECTS(std::cmp_less(n, cpr->m_end - cpr->m_cur), "string length mismatch");
 
     val.assign(reinterpret_cast<char const*>(cpr->m_cur), n);
     cpr->m_cur += n;
@@ -284,7 +282,7 @@ class parquet_field_string_list : public parquet_field_list<std::string, FieldTy
   {
     auto const read_value = [&val = v](uint32_t i, CompactProtocolReader* cpr) {
       auto const l = cpr->get_u32();
-      CUDF_EXPECTS(l < static_cast<size_t>(cpr->m_end - cpr->m_cur), "string length mismatch");
+      CUDF_EXPECTS(std::cmp_less(l, cpr->m_end - cpr->m_cur), "string length mismatch");
 
       CUDF_EXPECTS(i < val.size(), "Index out of bounds");
       val[i].assign(reinterpret_cast<char const*>(cpr->m_cur), l);
@@ -433,7 +431,7 @@ class parquet_field_binary : public parquet_field {
   {
     assert_field_type(field_type, FieldType::BINARY);
     auto const n = cpr->get_u32();
-    CUDF_EXPECTS(n <= static_cast<size_t>(cpr->m_end - cpr->m_cur), "binary length mismatch");
+    CUDF_EXPECTS(std::cmp_less_equal(n, cpr->m_end - cpr->m_cur), "binary length mismatch");
 
     val.resize(n);
     val.assign(cpr->m_cur, cpr->m_cur + n);
@@ -454,7 +452,7 @@ class parquet_field_binary_list
   {
     auto const read_value = [&val = v](uint32_t i, CompactProtocolReader* cpr) {
       auto const l = cpr->get_u32();
-      CUDF_EXPECTS(l <= static_cast<size_t>(cpr->m_end - cpr->m_cur), "binary length mismatch");
+      CUDF_EXPECTS(std::cmp_less_equal(l, cpr->m_end - cpr->m_cur), "binary length mismatch");
 
       CUDF_EXPECTS(i < val.size(), "Index out of bounds");
       val[i].resize(l);
@@ -897,9 +895,9 @@ int CompactProtocolReader::WalkSchema(
 {
   if (idx >= 0 && (size_t)idx < md->schema.size()) {
     SchemaElement* e = &md->schema[idx];
-    if (e->repetition_type == OPTIONAL) {
+    if (e->repetition_type == FieldRepetitionType::OPTIONAL) {
       ++max_def_level;
-    } else if (e->repetition_type == REPEATED) {
+    } else if (e->repetition_type == FieldRepetitionType::REPEATED) {
       ++max_def_level;
       ++max_rep_level;
     }

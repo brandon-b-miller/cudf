@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,16 +58,15 @@ struct quantile_functor {
   rmm::device_async_resource_ref mr;
 
   template <typename T>
-  std::enable_if_t<not std::is_arithmetic_v<T> and not cudf::is_fixed_point<T>(),
-                   std::unique_ptr<column>>
-  operator()(column_view const& input)
+  std::unique_ptr<column> operator()(column_view const& input)
+    requires(not std::is_arithmetic_v<T> and not cudf::is_fixed_point<T>())
   {
     CUDF_FAIL("quantile does not support non-numeric types");
   }
 
   template <typename T>
-  std::enable_if_t<std::is_arithmetic_v<T> or cudf::is_fixed_point<T>(), std::unique_ptr<column>>
-  operator()(column_view const& input)
+  std::unique_ptr<column> operator()(column_view const& input)
+    requires(std::is_arithmetic_v<T> or cudf::is_fixed_point<T>())
   {
     using StorageType   = cudf::device_storage_type_t<T>;
     using ExactResult   = std::conditional_t<exact and not cudf::is_fixed_point<T>(), double, T>;
@@ -89,7 +88,7 @@ struct quantile_functor {
     auto d_output = mutable_column_device_view::create(output->mutable_view(), stream);
 
     auto q_device =
-      cudf::detail::make_device_uvector_sync(q, stream, cudf::get_current_device_resource_ref());
+      cudf::detail::make_device_uvector(q, stream, cudf::get_current_device_resource_ref());
 
     if (!cudf::is_dictionary(input.type())) {
       auto sorted_data =

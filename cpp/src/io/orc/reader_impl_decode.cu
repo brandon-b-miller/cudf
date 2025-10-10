@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
+#include "io/comp/decompression.hpp"
 #include "io/comp/gpuinflate.hpp"
-#include "io/comp/nvcomp_adapter.hpp"
 #include "io/orc/reader_impl.hpp"
 #include "io/orc/reader_impl_chunking.hpp"
 #include "io/orc/reader_impl_helpers.hpp"
@@ -24,6 +24,7 @@
 #include <cudf/detail/copy.hpp>
 #include <cudf/detail/device_scalar.hpp>
 #include <cudf/detail/null_mask.hpp>
+#include <cudf/detail/structs/utilities.hpp>
 #include <cudf/detail/transform.hpp>
 #include <cudf/detail/utilities/integer_utils.hpp>
 #include <cudf/detail/utilities/vector_factories.hpp>
@@ -105,12 +106,12 @@ rmm::device_buffer decompress_stripe_data(
         stripe_data[info.source.stripe_idx - loaded_stripe_range.begin].data()) +
         info.dst_pos,
       info.length);
-
     if (compinfo_ready) {
-      auto const& cached_comp_info             = compinfo_map.at(info.source);
-      stream_comp_info.num_compressed_blocks   = cached_comp_info.num_compressed_blocks;
-      stream_comp_info.num_uncompressed_blocks = cached_comp_info.num_uncompressed_blocks;
-      stream_comp_info.max_uncompressed_size   = cached_comp_info.total_decomp_size;
+      auto const& cached_comp_info                 = compinfo_map.at(info.source);
+      stream_comp_info.num_compressed_blocks       = cached_comp_info.num_compressed_blocks;
+      stream_comp_info.num_uncompressed_blocks     = cached_comp_info.num_uncompressed_blocks;
+      stream_comp_info.max_uncompressed_size       = cached_comp_info.total_decomp_size;
+      stream_comp_info.max_uncompressed_block_size = cached_comp_info.max_uncompressed_block_size;
 
       num_compressed_blocks += cached_comp_info.num_compressed_blocks;
       num_uncompressed_blocks += cached_comp_info.num_uncompressed_blocks;
@@ -125,7 +126,7 @@ rmm::device_buffer decompress_stripe_data(
                                  decompressor.GetBlockSize(),
                                  decompressor.GetLog2MaxCompressionRatio(),
                                  stream);
-    compinfo.device_to_host_sync(stream);
+    compinfo.device_to_host(stream);
 
     for (std::size_t i = 0; i < compinfo.size(); ++i) {
       num_compressed_blocks += compinfo[i].num_compressed_blocks;
@@ -150,11 +151,11 @@ rmm::device_buffer decompress_stripe_data(
     num_compressed_blocks + num_uncompressed_blocks, stream);
   rmm::device_uvector<device_span<uint8_t>> inflate_out(
     num_compressed_blocks + num_uncompressed_blocks, stream);
-  rmm::device_uvector<compression_result> inflate_res(num_compressed_blocks, stream);
+  rmm::device_uvector<codec_exec_result> inflate_res(num_compressed_blocks, stream);
   thrust::fill(rmm::exec_policy_nosync(stream),
                inflate_res.begin(),
                inflate_res.end(),
-               compression_result{0, compression_status::FAILURE});
+               codec_exec_result{0, codec_status::FAILURE});
 
   // Parse again to populate the decompression input/output buffers
   std::size_t decomp_offset      = 0;
@@ -190,79 +191,27 @@ rmm::device_buffer decompress_stripe_data(
   any_block_failure[0] = false;
   any_block_failure.host_to_device_async(stream);
 
-  // Dispatch batches of blocks to decompress
-  if (num_compressed_blocks > 0) {
-    device_span<device_span<uint8_t const>> inflate_in_view{inflate_in.data(),
-                                                            num_compressed_blocks};
-    device_span<device_span<uint8_t>> inflate_out_view{inflate_out.data(), num_compressed_blocks};
-    switch (decompressor.compression()) {
-      case compression_type::ZLIB:
-        if (nvcomp::is_decompression_disabled(nvcomp::compression_type::DEFLATE)) {
-          gpuinflate(
-            inflate_in_view, inflate_out_view, inflate_res, gzip_header_included::NO, stream);
-        } else {
-          nvcomp::batched_decompress(nvcomp::compression_type::DEFLATE,
-                                     inflate_in_view,
-                                     inflate_out_view,
-                                     inflate_res,
-                                     max_uncomp_block_size,
-                                     total_decomp_size,
-                                     stream);
-        }
-        break;
-      case compression_type::SNAPPY:
-        if (nvcomp::is_decompression_disabled(nvcomp::compression_type::SNAPPY)) {
-          gpu_unsnap(inflate_in_view, inflate_out_view, inflate_res, stream);
-        } else {
-          nvcomp::batched_decompress(nvcomp::compression_type::SNAPPY,
-                                     inflate_in_view,
-                                     inflate_out_view,
-                                     inflate_res,
-                                     max_uncomp_block_size,
-                                     total_decomp_size,
-                                     stream);
-        }
-        break;
-      case compression_type::ZSTD:
-        if (auto const reason = nvcomp::is_decompression_disabled(nvcomp::compression_type::ZSTD);
-            reason) {
-          CUDF_FAIL("Decompression error: " + reason.value());
-        }
-        nvcomp::batched_decompress(nvcomp::compression_type::ZSTD,
-                                   inflate_in_view,
-                                   inflate_out_view,
-                                   inflate_res,
-                                   max_uncomp_block_size,
-                                   total_decomp_size,
-                                   stream);
-        break;
-      case compression_type::LZ4:
-        if (auto const reason = nvcomp::is_decompression_disabled(nvcomp::compression_type::LZ4);
-            reason) {
-          CUDF_FAIL("Decompression error: " + reason.value());
-        }
-        nvcomp::batched_decompress(nvcomp::compression_type::LZ4,
-                                   inflate_in_view,
-                                   inflate_out_view,
-                                   inflate_res,
-                                   max_uncomp_block_size,
-                                   total_decomp_size,
-                                   stream);
-        break;
-      default: CUDF_FAIL("Unexpected decompression dispatch"); break;
-    }
+  device_span<device_span<uint8_t const>> inflate_in_view{inflate_in.data(), num_compressed_blocks};
+  device_span<device_span<uint8_t>> inflate_out_view{inflate_out.data(), num_compressed_blocks};
+  cudf::io::detail::decompress(decompressor.compression(),
+                               inflate_in_view,
+                               inflate_out_view,
+                               inflate_res,
+                               max_uncomp_block_size,
+                               total_decomp_size,
+                               stream);
 
-    // Check if any block has been failed to decompress.
-    // Not using `thrust::any` or `thrust::count_if` to defer stream sync.
-    thrust::for_each(
-      rmm::exec_policy_nosync(stream),
-      thrust::make_counting_iterator(std::size_t{0}),
-      thrust::make_counting_iterator(inflate_res.size()),
-      [results           = inflate_res.begin(),
-       any_block_failure = any_block_failure.device_ptr()] __device__(auto const idx) {
-        if (results[idx].status != compression_status::SUCCESS) { *any_block_failure = true; }
-      });
-  }
+  // Check if any block has been failed to decompress.
+  // Not using `thrust::any` or `thrust::count_if` to defer stream sync.
+  thrust::for_each(rmm::exec_policy_nosync(stream),
+                   thrust::make_counting_iterator(std::size_t{0}),
+                   thrust::make_counting_iterator(inflate_res.size()),
+                   [results           = inflate_res.begin(),
+                    any_block_failure = any_block_failure.device_ptr()] __device__(auto const idx) {
+                     if (results[idx].status != codec_status::SUCCESS) {
+                       *any_block_failure = true;
+                     }
+                   });
 
   if (num_uncompressed_blocks > 0) {
     device_span<device_span<uint8_t const>> copy_in_view{inflate_in.data() + num_compressed_blocks,
@@ -276,7 +225,7 @@ rmm::device_buffer decompress_stripe_data(
   any_block_failure.device_to_host_async(stream);
 
   post_decompression_reassemble(compinfo.device_ptr(), compinfo.size(), stream);
-  compinfo.device_to_host_sync(stream);  // This also sync stream for `any_block_failure`.
+  compinfo.device_to_host(stream);  // This also sync stream for `any_block_failure`.
 
   // We can check on host after stream synchronize
   CUDF_EXPECTS(not any_block_failure[0], "Error during decompression");
@@ -341,7 +290,7 @@ void update_null_mask(cudf::detail::hostdevice_2dvector<column_desc>& chunks,
   for (std::size_t col_idx = 0; col_idx < num_columns; ++col_idx) {
     if (chunks[0][col_idx].parent_validity_info.valid_map_base != nullptr) {
       if (not is_mask_updated) {
-        chunks.device_to_host_sync(stream);
+        chunks.device_to_host(stream);
         is_mask_updated = true;
       }
 
@@ -396,7 +345,7 @@ void update_null_mask(cudf::detail::hostdevice_2dvector<column_desc>& chunks,
         chunk.valid_map_base = out_buffers[col_idx].null_mask();
       }
     }
-    chunks.host_to_device_sync(stream);
+    chunks.host_to_device(stream);
   }
 }
 
@@ -709,7 +658,7 @@ std::vector<range> find_table_splits(table_view const& input,
                          segmented_sizes.d_end(),
                          segmented_sizes.d_begin(),
                          cumulative_size_plus{});
-  segmented_sizes.device_to_host_sync(stream);
+  segmented_sizes.device_to_host(stream);
 
   return find_splits<cumulative_size>(segmented_sizes, input.num_rows(), size_limit);
 }
@@ -1024,7 +973,7 @@ void reader_impl::decompress_and_decode_stripes(read_mode mode)
       scan_null_counts(
         chunks, null_count_prefix_sums.data() + num_processed_lvl_columns * stripe_count, _stream);
 
-      row_groups.device_to_host_sync(_stream);
+      row_groups.device_to_host(_stream);
       aggregate_child_meta(
         level, _selected_columns, chunks, row_groups, nested_cols, _out_buffers[level], col_meta);
 
@@ -1058,6 +1007,9 @@ void reader_impl::decompress_and_decode_stripes(read_mode mode)
       return make_column(col_buffer, &_out_metadata.schema_info.back(), std::nullopt, _stream);
     });
   _chunk_read_data.decoded_table = std::make_unique<table>(std::move(out_columns));
+
+  out_columns =
+    cudf::structs::detail::enforce_null_consistency(std::move(out_columns), _stream, _mr);
 
   // Free up temp memory used for decoding.
   for (std::size_t level = 0; level < _selected_columns.num_levels(); ++level) {

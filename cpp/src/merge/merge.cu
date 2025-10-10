@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 #include <cudf/detail/iterator.cuh>
 #include <cudf/detail/merge.hpp>
 #include <cudf/detail/nvtx/ranges.hpp>
+#include <cudf/detail/row_operator/row_operators.cuh>
 #include <cudf/detail/search.hpp>
 #include <cudf/detail/utilities/cuda.cuh>
 #include <cudf/detail/utilities/vector_factories.hpp>
@@ -30,7 +31,6 @@
 #include <cudf/merge.hpp>
 #include <cudf/strings/detail/merge.hpp>
 #include <cudf/structs/structs_column_view.hpp>
-#include <cudf/table/experimental/row_operators.cuh>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_device_view.cuh>
 #include <cudf/utilities/default_stream.hpp>
@@ -43,6 +43,7 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/functional>
+#include <cuda/std/iterator>
 #include <thrust/binary_search.h>
 #include <thrust/iterator/constant_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
@@ -82,10 +83,10 @@ struct row_lexicographic_tagged_comparator {
     table_device_view const* ptr_right_dview{r_side == side::LEFT ? &_lhs : &_rhs};
     auto const comparator = [&]() {
       if constexpr (has_nulls) {
-        return cudf::experimental::row::lexicographic::device_row_comparator<false, bool>{
+        return cudf::detail::row::lexicographic::device_row_comparator<false, bool>{
           has_nulls, *ptr_left_dview, *ptr_right_dview, _column_order, _null_precedence};
       } else {
-        return cudf::experimental::row::lexicographic::device_row_comparator<false, bool>{
+        return cudf::detail::row::lexicographic::device_row_comparator<false, bool>{
           has_nulls, *ptr_left_dview, *ptr_right_dview, _column_order};
       }
     }();
@@ -328,7 +329,7 @@ index_vector generate_merged_indices_nested(table_view const& left_table,
         // this tells us between which segments of left elements a right element
         // would fall
         auto const r_bound      = thrust::upper_bound(thrust::seq, left, left + left_size, idx);
-        auto const r_segment    = thrust::distance(left, r_bound);
+        auto const r_segment    = cuda::std::distance(left, r_bound);
         merged[r_segment + idx] = thrust::make_pair(side::RIGHT, idx);
       } else {
         auto const left_idx               = idx - right_size;
@@ -358,11 +359,11 @@ struct column_merger {
   // column merger operator;
   //
   template <typename Element>
-  std::enable_if_t<is_rep_layout_compatible<Element>(), std::unique_ptr<column>> operator()(
-    column_view const& lcol,
-    column_view const& rcol,
-    rmm::cuda_stream_view stream,
-    rmm::device_async_resource_ref mr) const
+  std::unique_ptr<column> operator()(column_view const& lcol,
+                                     column_view const& rcol,
+                                     rmm::cuda_stream_view stream,
+                                     rmm::device_async_resource_ref mr) const
+    requires(is_rep_layout_compatible<Element>())
   {
     auto lsz         = lcol.size();
     auto merged_size = lsz + rcol.size();

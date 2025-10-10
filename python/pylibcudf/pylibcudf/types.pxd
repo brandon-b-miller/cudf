@@ -1,5 +1,6 @@
-# Copyright (c) 2023-2024, NVIDIA CORPORATION.
+# Copyright (c) 2023-2025, NVIDIA CORPORATION.
 
+from libc.stddef cimport size_t
 from libc.stdint cimport int32_t
 from libcpp cimport bool as cbool
 from pylibcudf.libcudf.types cimport (
@@ -11,6 +12,7 @@ from pylibcudf.libcudf.types cimport (
     null_equality,
     null_order,
     null_policy,
+    null_aware,
     order,
     size_type,
     sorted,
@@ -27,4 +29,4 @@ cdef class DataType:
     @staticmethod
     cdef DataType from_libcudf(data_type dt)
 
-cpdef size_type size_of(DataType t)
+cpdef size_t size_of(DataType t)

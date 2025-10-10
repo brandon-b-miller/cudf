@@ -1,17 +1,22 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.
+# Copyright (c) 2024-2025, NVIDIA CORPORATION.
 
 from libcpp cimport bool
 from libcpp.map cimport map
-
 from libcpp.string cimport string
 from libcpp.utility cimport move
 from libcpp.vector cimport vector
+
+from rmm.pylibrmm.stream cimport Stream
+from rmm.pylibrmm.memory_resource cimport DeviceMemoryResource
+
 from pylibcudf.io.types cimport SourceInfo, SinkInfo, TableWithMetadata
+
 from pylibcudf.libcudf.io.csv cimport (
     csv_reader_options,
     csv_writer_options,
     read_csv as cpp_read_csv,
     write_csv as cpp_write_csv,
+    is_supported_write_csv as cpp_is_supported_write_csv,
 )
 
 from pylibcudf.libcudf.io.types cimport (
@@ -19,9 +24,14 @@ from pylibcudf.libcudf.io.types cimport (
     quote_style,
     table_with_metadata,
 )
+
 from pylibcudf.libcudf.types cimport data_type, size_type
-from pylibcudf.types cimport DataType
+
 from pylibcudf.table cimport Table
+
+from pylibcudf.types cimport DataType
+
+from pylibcudf.utils cimport _get_stream, _get_memory_resource
 
 __all__ = [
     "read_csv",
@@ -618,6 +628,22 @@ cdef class CsvReaderOptionsBuilder:
         self.c_obj.dayfirst(dayfirst)
         return self
 
+    cpdef CsvReaderOptionsBuilder delimiter(self, str delimiter):
+        """
+        Sets field delimiter.
+
+        Parameters
+        ----------
+        delimiter : str
+            A character to indicate delimiter
+
+        Returns
+        -------
+        CsvReaderOptionsBuilder
+        """
+        self.c_obj.delimiter(ord(delimiter))
+        return self
+
     cpdef CsvReaderOptions build(self):
         """Create a CsvReaderOptions object"""
         cdef CsvReaderOptions csv_options = CsvReaderOptions.__new__(
@@ -629,7 +655,9 @@ cdef class CsvReaderOptionsBuilder:
 
 
 cpdef TableWithMetadata read_csv(
-    CsvReaderOptions options
+    CsvReaderOptions options,
+    Stream stream = None,
+    DeviceMemoryResource mr=None,
 ):
     """
     Read from CSV format.
@@ -643,12 +671,18 @@ cpdef TableWithMetadata read_csv(
     ----------
     options: CsvReaderOptions
         Settings for controlling reading behavior
+    stream : Stream | None
+        CUDA stream used for device memory operations and kernel launches
+    mr : DeviceMemoryResource, optional
+        Device memory resource used to allocate the returned table's device memory.
     """
     cdef table_with_metadata c_result
+    cdef Stream s = _get_stream(stream)
+    mr = _get_memory_resource(mr)
     with nogil:
-        c_result = move(cpp_read_csv(options.c_obj))
+        c_result = move(cpp_read_csv(options.c_obj, s.view(), mr.get_mr()))
 
-    cdef TableWithMetadata tbl_meta = TableWithMetadata.from_libcudf(c_result)
+    cdef TableWithMetadata tbl_meta = TableWithMetadata.from_libcudf(c_result, s, mr)
     return tbl_meta
 
 
@@ -831,7 +865,8 @@ cdef class CsvWriterOptionsBuilder:
 
 
 cpdef void write_csv(
-    CsvWriterOptions options
+    CsvWriterOptions options,
+    Stream stream = None,
 ):
     """
     Write to CSV format.
@@ -845,7 +880,17 @@ cpdef void write_csv(
     ----------
     options: CsvWriterOptions
         Settings for controlling writing behavior
+    stream : Stream | None
+        CUDA stream used for device memory operations and kernel launches
     """
-
+    cdef Stream s = _get_stream(stream)
     with nogil:
-        cpp_write_csv(move(options.c_obj))
+        cpp_write_csv(move(options.c_obj), s.view())
+
+
+cpdef bool is_supported_write_csv(DataType type):
+    """Check if the dtype is supported for CSV writing
+
+    For details, see :cpp:func:`is_supported_write_type`.
+    """
+    return cpp_is_supported_write_csv(type.c_obj)

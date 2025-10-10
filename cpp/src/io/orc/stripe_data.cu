@@ -18,6 +18,7 @@
 #include "io/utilities/column_buffer.hpp"
 #include "orc_gpu.hpp"
 
+#include <cudf/detail/utilities/functional.hpp>
 #include <cudf/io/orc_types.hpp>
 
 #include <rmm/cuda_stream_view.hpp>
@@ -1212,10 +1213,14 @@ static __device__ int decode_decimals(orc_bytestream_s* bs,
     }
     __syncthreads();
     uint32_t num_vals_to_read = scratch->num_vals;
+
+    __int128_t v = 0;
     if (t >= num_vals_read and t < num_vals_to_read) {
       auto const pos = static_cast<int>(vals.i64[2 * t]);
-      __int128_t v   = decode_varint128(bs, pos);
-
+      v              = decode_varint128(bs, pos);
+    }
+    __syncthreads();
+    if (t >= num_vals_read and t < num_vals_to_read) {
       auto const scaled_value = [&]() {
         // Since cuDF column stores just one scale, value needs to be adjusted to col_scale from
         // val_scale. So the difference of them will be used to add 0s or remove digits.
@@ -1228,6 +1233,7 @@ static __device__ int decode_decimals(orc_bytestream_s* bs,
           return (v / kPow5i[abs_scale]) >> abs_scale;
         }
       }();
+
       if (dtype_id == type_id::DECIMAL32) {
         vals.i32[t] = scaled_value;
       } else if (dtype_id == type_id::DECIMAL64) {
@@ -1511,10 +1517,11 @@ static __device__ void DecodeRowPositions(orcdec_state_s* s,
       }
       if (t == nrows - 1) { s->u.rowdec.nz_count = min(nz_count, s->top.data.max_vals); }
       __syncthreads();
+
       // TBD: Brute-forcing this, there might be a more efficient way to find the thread with the
       // last row
       last_row = (nz_count == s->u.rowdec.nz_count) ? row_plus1 : 0;
-      last_row = block_reduce(temp_storage).Reduce(last_row, cub::Max());
+      last_row = block_reduce(temp_storage).Reduce(last_row, cudf::detail::maximum{});
       nz_pos   = (valid) ? nz_count : 0;
       if (t == 0) { s->top.data.nrows = last_row; }
       if (valid && nz_pos - 1 < s->u.rowdec.nz_count) { s->u.rowdec.row[nz_pos - 1] = row_plus1; }
@@ -1595,6 +1602,8 @@ CUDF_KERNEL void __launch_bounds__(block_size)
   size_t const max_num_rows = s->chunk.column_num_rows;
   __shared__ run_cache_manager run_cache_manager_inst;
   cache_helper cache_helper_inst(run_cache_manager_inst);
+
+  __syncthreads();
   if (t == 0 and is_valid) {
     // If we have an index, seek to the initial run and update row positions
     if (num_rowgroups > 0) {
@@ -1730,8 +1739,9 @@ CUDF_KERNEL void __launch_bounds__(block_size)
         // Adjust the maximum number of values
         if (numvals == 0 && vals_skipped == 0) {
           numvals = s->top.data.max_vals;  // Just so that we don't hang if the stream is corrupted
+        } else {
+          if (t == 0 && numvals < s->top.data.max_vals) { s->top.data.max_vals = numvals; }
         }
-        if (t == 0 && numvals < s->top.data.max_vals) { s->top.data.max_vals = numvals; }
       }
       __syncthreads();
       // Account for skipped values

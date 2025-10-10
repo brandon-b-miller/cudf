@@ -1,22 +1,29 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.
+# Copyright (c) 2024-2025, NVIDIA CORPORATION.
 from libc.stdint cimport uint64_t, int64_t
+
 from libcpp cimport bool
+from libcpp.map cimport map
+from libcpp.memory cimport unique_ptr
 from libcpp.optional cimport optional
 from libcpp.string cimport string
 from libcpp.vector cimport vector
-from libcpp.memory cimport unique_ptr
-from libcpp.map cimport map
+
+from rmm.pylibrmm.stream cimport Stream
+from rmm.pylibrmm.memory_resource cimport DeviceMemoryResource
+
 from pylibcudf.io.types cimport (
     SourceInfo,
     SinkInfo,
     TableWithMetadata,
     TableInputMetadata,
 )
+
 from pylibcudf.libcudf.io.orc_metadata cimport (
     column_statistics,
     parsed_orc_statistics,
     statistics_type,
 )
+
 from pylibcudf.libcudf.io.orc cimport (
     orc_chunked_writer,
     orc_reader_options,
@@ -26,13 +33,18 @@ from pylibcudf.libcudf.io.orc cimport (
     chunked_orc_writer_options,
     chunked_orc_writer_options_builder,
 )
-from pylibcudf.libcudf.types cimport size_type
-from pylibcudf.types cimport DataType
-from pylibcudf.table cimport Table
+
 from pylibcudf.libcudf.io.types cimport (
     compression_type,
     statistics_freq,
 )
+
+from pylibcudf.libcudf.types cimport size_type
+
+from pylibcudf.table cimport Table
+
+from pylibcudf.types cimport DataType
+
 
 cdef class OrcReaderOptions:
     cdef orc_reader_options c_obj
@@ -50,7 +62,9 @@ cdef class OrcReaderOptionsBuilder:
     cpdef OrcReaderOptionsBuilder use_index(self, bool use)
     cpdef OrcReaderOptions build(self)
 
-cpdef TableWithMetadata read_orc(OrcReaderOptions options)
+cpdef TableWithMetadata read_orc(
+    OrcReaderOptions options, Stream stream = *, DeviceMemoryResource mr=*
+)
 
 cdef class OrcColumnStatistics:
     cdef optional[uint64_t] number_of_values_c
@@ -72,7 +86,8 @@ cdef class ParsedOrcStatistics:
 
 
 cpdef ParsedOrcStatistics read_parsed_orc_statistics(
-    SourceInfo source_info
+    SourceInfo source_info,
+    Stream stream=*
 )
 
 cdef class OrcWriterOptions:
@@ -93,7 +108,7 @@ cdef class OrcWriterOptionsBuilder:
     cpdef OrcWriterOptionsBuilder metadata(self, TableInputMetadata meta)
     cpdef OrcWriterOptions build(self)
 
-cpdef void write_orc(OrcWriterOptions options)
+cpdef void write_orc(OrcWriterOptions options, Stream stream = *)
 
 cdef class OrcChunkedWriter:
     cdef unique_ptr[orc_chunked_writer] c_obj

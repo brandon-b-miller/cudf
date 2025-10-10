@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #include <cudf/copying.hpp>
 #include <cudf/detail/offsets_iterator_factory.cuh>
 #include <cudf/detail/utilities/cuda.cuh>
+#include <cudf/detail/utilities/grid_1d.cuh>
 #include <cudf/strings/detail/strings_children.cuh>
 #include <cudf/strings/detail/utilities.hpp>
 #include <cudf/strings/strings_column_view.hpp>
@@ -31,8 +32,8 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/functional>
+#include <cuda/std/iterator>
 #include <thrust/binary_search.h>
-#include <thrust/distance.h>
 #include <thrust/execution_policy.h>
 #include <thrust/iterator/transform_iterator.h>
 
@@ -186,11 +187,11 @@ CUDF_KERNEL void gather_chars_fn_char_parallel(StringIterator strings_begin,
        out_ibyte += blockDim.x) {
     // binary search for the string index corresponding to out_ibyte
     auto const string_idx_iter =
-      thrust::prev(thrust::upper_bound(thrust::seq,
-                                       out_offsets_threadblock,
-                                       out_offsets_threadblock + strings_current_threadblock,
-                                       out_ibyte));
-    size_type string_idx = thrust::distance(out_offsets_threadblock, string_idx_iter);
+      cuda::std::prev(thrust::upper_bound(thrust::seq,
+                                          out_offsets_threadblock,
+                                          out_offsets_threadblock + strings_current_threadblock,
+                                          out_ibyte));
+    size_type string_idx = cuda::std::distance(out_offsets_threadblock, string_idx_iter);
 
     // calculate which character to load within the string
     auto const icharacter = out_ibyte - out_offsets_threadblock[string_idx];
@@ -232,7 +233,7 @@ rmm::device_uvector<char> gather_chars(StringIterator strings_begin,
   if (output_count == 0) return rmm::device_uvector<char>(0, stream, mr);
 
   auto chars_data = rmm::device_uvector<char>(chars_bytes, stream, mr);
-  cudf::experimental::prefetch::detail::prefetch("gather", chars_data, stream);
+  cudf::prefetch::detail::prefetch(chars_data, stream);
   auto d_chars = chars_data.data();
 
   constexpr int warps_per_threadblock = 4;
@@ -315,8 +316,7 @@ std::unique_ptr<cudf::column> gather(strings_column_view const& strings,
   // build chars column
   auto const offsets_view =
     cudf::detail::offsetalator_factory::make_input_iterator(out_offsets_column->view());
-  cudf::experimental::prefetch::detail::prefetch(
-    "gather", strings.chars_begin(stream), strings.chars_size(stream), stream);
+  cudf::prefetch::detail::prefetch(strings.chars_begin(stream), strings.chars_size(stream), stream);
   auto out_chars_data = gather_chars(
     d_strings->begin<string_view>(), begin, end, offsets_view, total_bytes, stream, mr);
 

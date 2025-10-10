@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, NVIDIA CORPORATION.
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,10 @@
 
 #pragma once
 
+#include <cudf/io/types.hpp>
+
 #include <cstddef>
+#include <string>
 
 namespace cudf::io::detail {
 
@@ -33,5 +36,7 @@ namespace cudf::io::detail {
  * See https://github.com/rapidsai/cudf/issues/13605.
  */
 constexpr std::size_t BUFFER_PADDING_MULTIPLE{8};
+
+[[nodiscard]] std::string compression_type_name(compression_type compression);
 
 }  // namespace cudf::io::detail

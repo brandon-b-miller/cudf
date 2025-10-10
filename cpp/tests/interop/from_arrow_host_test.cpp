@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
-#include "nanoarrow_utils.hpp"
-
 #include <cudf_test/base_fixture.hpp>
 #include <cudf_test/column_utilities.hpp>
 #include <cudf_test/column_wrapper.hpp>
+#include <cudf_test/nanoarrow_utils.hpp>
 #include <cudf_test/table_utilities.hpp>
 #include <cudf_test/type_lists.hpp>
 
@@ -54,7 +53,7 @@ get_nanoarrow_host_tables(cudf::size_type length)
   auto list_array = get_nanoarrow_list_array<int64_t>(test_data.list_int64_data,
                                                       test_data.list_offsets,
                                                       test_data.list_int64_data_validity,
-                                                      test_data.bool_data_validity);
+                                                      test_data.list_validity);
 
   nanoarrow::UniqueArray arrow;
   NANOARROW_THROW_NOT_OK(ArrowArrayInitFromSchema(arrow.get(), schema.get(), nullptr));
@@ -364,7 +363,7 @@ TYPED_TEST(FromArrowHostDeviceTestDecimalsTest, FixedPointTableNulls)
 
     // converting arrow host memory to cudf table gives us the expected table
     auto got_cudf_table = cudf::from_arrow_host(input_schema.get(), &input);
-    CUDF_TEST_EXPECT_TABLES_EQUAL(expected, got_cudf_table->view());
+    CUDF_TEST_EXPECT_TABLES_EQUIVALENT(expected, got_cudf_table->view());
 
     // converting to a cudf table with a single struct column gives us the expected
     // result column
@@ -422,7 +421,7 @@ TYPED_TEST(FromArrowHostDeviceTestDecimalsTest, FixedPointTableLargeNulls)
 
     // converting arrow host memory to cudf table gives us the expected table
     auto got_cudf_table = cudf::from_arrow_host(input_schema.get(), &input);
-    CUDF_TEST_EXPECT_TABLES_EQUAL(expected, got_cudf_table->view());
+    CUDF_TEST_EXPECT_TABLES_EQUIVALENT(expected, got_cudf_table->view());
 
     // converting to a cudf table with a single struct column gives us the expected
     // result column
@@ -431,7 +430,7 @@ TYPED_TEST(FromArrowHostDeviceTestDecimalsTest, FixedPointTableLargeNulls)
     auto got_cudf_col_view = got_cudf_col->view();
     cudf::table_view from_struct{std::vector<cudf::column_view>(got_cudf_col_view.child_begin(),
                                                                 got_cudf_col_view.child_end())};
-    CUDF_TEST_EXPECT_TABLES_EQUAL(got_cudf_table->view(), from_struct);
+    CUDF_TEST_EXPECT_TABLES_EQUIVALENT(got_cudf_table->view(), from_struct);
   }
 }
 
@@ -500,7 +499,7 @@ TEST_F(FromArrowHostDeviceTest, NestedList)
 
   // converting from arrow host memory to cudf gives us the expected table
   auto got_cudf_table = cudf::from_arrow_host(input_schema.get(), &input);
-  CUDF_TEST_EXPECT_TABLES_EQUAL(expected_table_view, got_cudf_table->view());
+  CUDF_TEST_EXPECT_TABLES_EQUIVALENT(expected_table_view, got_cudf_table->view());
 
   // converting to a single column cudf table gives us the expected struct column
   auto got_cudf_col = cudf::from_arrow_host_column(input_schema.get(), &input);
@@ -664,7 +663,7 @@ TEST_F(FromArrowHostDeviceTest, StructColumn)
 
   // test we get the expected cudf::table from the arrow host memory data
   auto got_cudf_table = cudf::from_arrow_host(input_schema.get(), &input);
-  CUDF_TEST_EXPECT_TABLES_EQUAL(expected_table_view, got_cudf_table->view());
+  CUDF_TEST_EXPECT_TABLES_EQUIVALENT(expected_table_view, got_cudf_table->view());
 
   // test we get the expected cudf struct column
   auto got_cudf_col = cudf::from_arrow_host_column(input_schema.get(), &input);
@@ -777,6 +776,61 @@ void slice_host_nanoarrow(ArrowArray* arr, int64_t start, int64_t end)
   }
 }
 
+TEST_F(FromArrowHostDeviceTest, StringViewType)
+{
+  auto data = std::vector<std::string>({"hello",
+                                        "worldy",
+                                        "much longer string",
+                                        "",
+                                        "another even longer string",
+                                        "",
+                                        "other string"});
+
+  auto validity = std::vector<bool>{true, true, true, false, true, true, true};
+
+  ArrowArray input;
+  NANOARROW_THROW_NOT_OK(ArrowArrayInitFromType(&input, NANOARROW_TYPE_STRING_VIEW));
+  NANOARROW_THROW_NOT_OK(ArrowArrayStartAppending(&input));
+
+  // Set up validity bitmap
+  ArrowBitmap validity_bitmap;
+  ArrowBitmapInit(&validity_bitmap);
+  NANOARROW_THROW_NOT_OK(ArrowBitmapReserve(&validity_bitmap, validity.size()));
+
+  for (size_t i = 0; i < data.size(); ++i) {
+    if (validity[i]) {
+      auto item = ArrowStringView{data[i].c_str(), static_cast<int64_t>(data[i].size())};
+      NANOARROW_THROW_NOT_OK(ArrowArrayAppendString(&input, item));
+      NANOARROW_THROW_NOT_OK(ArrowBitmapAppend(&validity_bitmap, 1, 1));
+    } else {
+      NANOARROW_THROW_NOT_OK(ArrowArrayAppendNull(&input, 1));
+      NANOARROW_THROW_NOT_OK(ArrowBitmapAppend(&validity_bitmap, 0, 1));
+    }
+  }
+
+  // Set the validity bitmap on the array
+  ArrowArraySetValidityBitmap(&input, &validity_bitmap);
+  input.null_count = std::count(validity.begin(), validity.end(), false);
+
+  NANOARROW_THROW_NOT_OK(
+    ArrowArrayFinishBuilding(&input, NANOARROW_VALIDATION_LEVEL_NONE, nullptr));
+
+  ArrowSchema schema;
+  NANOARROW_THROW_NOT_OK(ArrowSchemaInitFromType(&schema, NANOARROW_TYPE_STRING_VIEW));
+
+  auto result = cudf::from_arrow_column(&schema, &input);
+
+  auto expected = cudf::test::strings_column_wrapper(data.begin(), data.end(), validity.begin());
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(result->view(), expected);
+
+  // test with sliced (and include a null row)
+  slice_host_nanoarrow(&input, 2, 4);
+  auto sliced_result = cudf::from_arrow_column(&schema, &input);
+  auto sliced_expected =
+    cudf::test::strings_column_wrapper(data.begin() + 2, data.begin() + 4, validity.begin() + 2);
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(sliced_result->view(), sliced_expected);
+}
+
 struct FromArrowHostDeviceTestSlice
   : public FromArrowHostDeviceTest,
     public ::testing::WithParamInterface<std::tuple<cudf::size_type, cudf::size_type>> {};
@@ -797,6 +851,7 @@ TEST_P(FromArrowHostDeviceTestSlice, SliceTest)
   input.device_type = ARROW_DEVICE_CPU;
 
   auto got_cudf_table = cudf::from_arrow_host(schema.get(), &input);
+
   if (got_cudf_table->num_rows() == 0 and sliced_cudf_table.num_rows() == 0) {
     CUDF_TEST_EXPECT_TABLES_EQUIVALENT(expected_cudf_table.view(), got_cudf_table->view());
 
@@ -807,14 +862,14 @@ TEST_P(FromArrowHostDeviceTestSlice, SliceTest)
                                                                 got_cudf_col_view.child_end())};
     CUDF_TEST_EXPECT_TABLES_EQUIVALENT(got_cudf_table->view(), from_struct);
   } else {
-    CUDF_TEST_EXPECT_TABLES_EQUAL(expected_cudf_table.view(), got_cudf_table->view());
+    CUDF_TEST_EXPECT_TABLES_EQUIVALENT(expected_cudf_table.view(), got_cudf_table->view());
 
     auto got_cudf_col = cudf::from_arrow_host_column(schema.get(), &input);
     EXPECT_EQ(got_cudf_col->type(), cudf::data_type{cudf::type_id::STRUCT});
     auto got_cudf_col_view = got_cudf_col->view();
     cudf::table_view from_struct{std::vector<cudf::column_view>(got_cudf_col_view.child_begin(),
                                                                 got_cudf_col_view.child_end())};
-    CUDF_TEST_EXPECT_TABLES_EQUAL(got_cudf_table->view(), from_struct);
+    CUDF_TEST_EXPECT_TABLES_EQUIVALENT(got_cudf_table->view(), from_struct);
   }
 }
 

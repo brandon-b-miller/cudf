@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (c) 2022-2024, NVIDIA CORPORATION.
+# Copyright (c) 2022-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
 # in compliance with the License. You may obtain a copy of the License at
@@ -23,6 +23,8 @@ rapids_cython_create_modules(
   SOURCE_FILES "${cython_sources}"
   LINKED_LIBRARIES "${linked_libraries}" ASSOCIATED_TARGETS cudf MODULE_PREFIX cpp
 )
+
+add_subdirectory(nvtext)
 add_subdirectory(io)
 add_subdirectory(lists)
 add_subdirectory(strings)

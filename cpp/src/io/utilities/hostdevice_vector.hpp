@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -100,23 +100,6 @@ class hostdevice_vector {
   [[nodiscard]] T* d_end() { return device_ptr(size()); }
   [[nodiscard]] T const* d_end() const { return device_ptr(size()); }
 
-  /**
-   * @brief Returns the specified element from device memory
-   *
-   * @note This function incurs a device to host memcpy and should be used sparingly.
-   * @note This function synchronizes `stream`.
-   *
-   * @throws rmm::out_of_range exception if `element_index >= size()`
-   *
-   * @param element_index Index of the desired element
-   * @param stream The stream on which to perform the copy
-   * @return The value of the specified element
-   */
-  [[nodiscard]] T element(std::size_t element_index, rmm::cuda_stream_view stream) const
-  {
-    return d_data.element(element_index, stream);
-  }
-
   operator cudf::host_span<T>() { return host_span<T>{h_data}.subspan(0, size()); }
   operator cudf::host_span<T const>() const
   {
@@ -131,14 +114,14 @@ class hostdevice_vector {
     cuda_memcpy_async<T>(d_data, h_data, stream);
   }
 
-  void host_to_device_sync(rmm::cuda_stream_view stream) { cuda_memcpy<T>(d_data, h_data, stream); }
+  void host_to_device(rmm::cuda_stream_view stream) { cuda_memcpy<T>(d_data, h_data, stream); }
 
   void device_to_host_async(rmm::cuda_stream_view stream)
   {
     cuda_memcpy_async<T>(h_data, d_data, stream);
   }
 
-  void device_to_host_sync(rmm::cuda_stream_view stream) { cuda_memcpy<T>(h_data, d_data, stream); }
+  void device_to_host(rmm::cuda_stream_view stream) { cuda_memcpy<T>(h_data, d_data, stream); }
 
   /**
    * @brief Converts a hostdevice_vector into a hostdevice_span.
@@ -217,10 +200,10 @@ class hostdevice_2dvector {
   [[nodiscard]] size_t size_bytes() const noexcept { return _data.size_bytes(); }
 
   void host_to_device_async(rmm::cuda_stream_view stream) { _data.host_to_device_async(stream); }
-  void host_to_device_sync(rmm::cuda_stream_view stream) { _data.host_to_device_sync(stream); }
+  void host_to_device(rmm::cuda_stream_view stream) { _data.host_to_device(stream); }
 
   void device_to_host_async(rmm::cuda_stream_view stream) { _data.device_to_host_async(stream); }
-  void device_to_host_sync(rmm::cuda_stream_view stream) { _data.device_to_host_sync(stream); }
+  void device_to_host(rmm::cuda_stream_view stream) { _data.device_to_host(stream); }
 
  private:
   hostdevice_vector<T> _data;

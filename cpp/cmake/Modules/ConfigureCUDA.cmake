@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (c) 2018-2024, NVIDIA CORPORATION.
+# Copyright (c) 2018-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
 # in compliance with the License. You may obtain a copy of the License at
@@ -37,7 +37,8 @@ if(DISABLE_DEPRECATION_WARNINGS)
 endif()
 
 # make sure we produce smallest binary size
-list(APPEND CUDF_CUDA_FLAGS -Xfatbin=-compress-all)
+include(${rapids-cmake-dir}/cuda/enable_fatbin_compression.cmake)
+rapids_cuda_enable_fatbin_compression(VARIABLE CUDF_CUDA_FLAGS TUNE_FOR rapids)
 
 # Option to enable line info in CUDA device compilation to allow introspection when profiling /
 # memchecking

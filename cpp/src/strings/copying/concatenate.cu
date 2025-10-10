@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,8 @@
 #include <cudf/detail/nvtx/ranges.hpp>
 #include <cudf/detail/offsets_iterator_factory.cuh>
 #include <cudf/detail/utilities/cuda.cuh>
+#include <cudf/detail/utilities/grid_1d.cuh>
+#include <cudf/detail/utilities/integer_utils.hpp>
 #include <cudf/detail/utilities/vector_factories.hpp>
 #include <cudf/strings/detail/concatenate.hpp>
 #include <cudf/strings/detail/utilities.hpp>
@@ -31,7 +33,7 @@
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/exec_policy.hpp>
 
-#include <thrust/advance.h>
+#include <cuda/std/iterator>
 #include <thrust/binary_search.h>
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
@@ -101,7 +103,7 @@ auto create_strings_device_views(host_span<column_view const> views, rmm::cuda_s
                                    device_views_ptr + views.size(),
                                    std::next(d_partition_offsets.begin()),
                                    chars_size_transform{},
-                                   thrust::plus{});
+                                   cuda::std::plus{});
   auto const output_chars_size = d_partition_offsets.back_element(stream);
   stream.synchronize();  // ensure copy of output_chars_size is complete before returning
 
@@ -131,7 +133,7 @@ CUDF_KERNEL void fused_concatenate_string_offset_kernel(
   if (Nullable) { active_mask = __ballot_sync(0xFFFF'FFFFu, output_index < output_size); }
   while (output_index < output_size) {
     // Lookup input index by searching for output index in offsets
-    auto const offset_it            = thrust::prev(thrust::upper_bound(
+    auto const offset_it            = cuda::std::prev(thrust::upper_bound(
       thrust::seq, input_offsets, input_offsets + num_input_views, output_index));
     size_type const partition_index = offset_it - input_offsets;
 
@@ -183,7 +185,7 @@ CUDF_KERNEL void fused_concatenate_string_chars_kernel(column_device_view const*
 
   while (output_index < output_size) {
     // Lookup input index by searching for output index in offsets
-    auto const offset_it            = thrust::prev(thrust::upper_bound(
+    auto const offset_it            = cuda::std::prev(thrust::upper_bound(
       thrust::seq, partition_offsets, partition_offsets + num_input_views, output_index));
     size_type const partition_index = offset_it - partition_offsets;
 

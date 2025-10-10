@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@
 #include <cudf/io/parquet.hpp>
 
 #include <array>
+#include <format>
+#include <string>
 
 using cudf::test::iterators::no_nulls;
 
@@ -688,18 +690,15 @@ TEST_P(ParquetV2Test, PartitionedWriteEmptyColumns)
 
 TEST_P(ParquetV2Test, CheckColumnOffsetIndex)
 {
-  constexpr auto num_rows      = 50000;
-  auto const is_v2             = GetParam();
-  auto const expected_hdr_type = is_v2 ? cudf::io::parquet::detail::PageType::DATA_PAGE_V2
-                                       : cudf::io::parquet::detail::PageType::DATA_PAGE;
+  constexpr auto num_rows = 50000;
+  auto const is_v2        = GetParam();
+  auto const expected_hdr_type =
+    is_v2 ? cudf::io::parquet::PageType::DATA_PAGE_V2 : cudf::io::parquet::PageType::DATA_PAGE;
 
   // fixed length strings
-  auto str1_elements = cudf::detail::make_counting_transform_iterator(0, [](auto i) {
-    std::array<char, 30> buf;
-    sprintf(buf.data(), "%012d", i);
-    return std::string(buf.data());
-  });
-  auto col0          = cudf::test::strings_column_wrapper(str1_elements, str1_elements + num_rows);
+  auto str1_elements = cudf::detail::make_counting_transform_iterator(
+    0, [](auto i) { return std::format("{:012d}", i); });
+  auto col0 = cudf::test::strings_column_wrapper(str1_elements, str1_elements + num_rows);
 
   auto col1_data = random_values<int8_t>(num_rows);
   auto col2_data = random_values<int16_t>(num_rows);
@@ -716,12 +715,9 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndex)
   auto col6 = cudf::test::fixed_width_column_wrapper<double>(col6_data.begin(), col6_data.end());
 
   // mixed length strings
-  auto str2_elements = cudf::detail::make_counting_transform_iterator(0, [](auto i) {
-    std::array<char, 30> buf;
-    sprintf(buf.data(), "%d", i);
-    return std::string(buf.data());
-  });
-  auto col7          = cudf::test::strings_column_wrapper(str2_elements, str2_elements + num_rows);
+  auto str2_elements =
+    cudf::detail::make_counting_transform_iterator(0, [](auto i) { return std::format("{}", i); });
+  auto col7 = cudf::test::strings_column_wrapper(str2_elements, str2_elements + num_rows);
 
   auto const expected = table_view{{col0, col1, col2, col3, col4, col5, col6, col7}};
 
@@ -734,7 +730,7 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndex)
   cudf::io::write_parquet(out_opts);
 
   auto const source = cudf::io::datasource::create(filepath);
-  cudf::io::parquet::detail::FileMetaData fmd;
+  cudf::io::parquet::FileMetaData fmd;
 
   read_footer(source, &fmd);
 
@@ -782,18 +778,15 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndex)
 
 TEST_P(ParquetV2Test, CheckColumnOffsetIndexNulls)
 {
-  constexpr auto num_rows      = 100000;
-  auto const is_v2             = GetParam();
-  auto const expected_hdr_type = is_v2 ? cudf::io::parquet::detail::PageType::DATA_PAGE_V2
-                                       : cudf::io::parquet::detail::PageType::DATA_PAGE;
+  constexpr auto num_rows = 100000;
+  auto const is_v2        = GetParam();
+  auto const expected_hdr_type =
+    is_v2 ? cudf::io::parquet::PageType::DATA_PAGE_V2 : cudf::io::parquet::PageType::DATA_PAGE;
 
   // fixed length strings
-  auto str1_elements = cudf::detail::make_counting_transform_iterator(0, [](auto i) {
-    std::array<char, 30> buf;
-    sprintf(buf.data(), "%012d", i);
-    return std::string(buf.data());
-  });
-  auto col0          = cudf::test::strings_column_wrapper(str1_elements, str1_elements + num_rows);
+  auto str1_elements = cudf::detail::make_counting_transform_iterator(
+    0, [](auto i) { return std::format("{:012d}", i); });
+  auto col0 = cudf::test::strings_column_wrapper(str1_elements, str1_elements + num_rows);
 
   auto col1_data = random_values<int8_t>(num_rows);
   auto col2_data = random_values<int16_t>(num_rows);
@@ -820,11 +813,8 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexNulls)
     cudf::test::fixed_width_column_wrapper<double>(col6_data.begin(), col6_data.end(), valids);
 
   // mixed length strings
-  auto str2_elements = cudf::detail::make_counting_transform_iterator(0, [](auto i) {
-    std::array<char, 30> buf;
-    sprintf(buf.data(), "%d", i);
-    return std::string(buf.data());
-  });
+  auto str2_elements =
+    cudf::detail::make_counting_transform_iterator(0, [](auto i) { return std::format("{}", i); });
   auto col7 = cudf::test::strings_column_wrapper(str2_elements, str2_elements + num_rows, valids);
 
   auto expected = table_view{{col0, col1, col2, col3, col4, col5, col6, col7}};
@@ -838,7 +828,7 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexNulls)
   cudf::io::write_parquet(out_opts);
 
   auto const source = cudf::io::datasource::create(filepath);
-  cudf::io::parquet::detail::FileMetaData fmd;
+  cudf::io::parquet::FileMetaData fmd;
 
   read_footer(source, &fmd);
 
@@ -892,18 +882,15 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexNulls)
 
 TEST_P(ParquetV2Test, CheckColumnOffsetIndexNullColumn)
 {
-  constexpr auto num_rows      = 100000;
-  auto const is_v2             = GetParam();
-  auto const expected_hdr_type = is_v2 ? cudf::io::parquet::detail::PageType::DATA_PAGE_V2
-                                       : cudf::io::parquet::detail::PageType::DATA_PAGE;
+  constexpr auto num_rows = 100000;
+  auto const is_v2        = GetParam();
+  auto const expected_hdr_type =
+    is_v2 ? cudf::io::parquet::PageType::DATA_PAGE_V2 : cudf::io::parquet::PageType::DATA_PAGE;
 
   // fixed length strings
-  auto str1_elements = cudf::detail::make_counting_transform_iterator(0, [](auto i) {
-    std::array<char, 30> buf;
-    sprintf(buf.data(), "%012d", i);
-    return std::string(buf.data());
-  });
-  auto col0          = cudf::test::strings_column_wrapper(str1_elements, str1_elements + num_rows);
+  auto str1_elements = cudf::detail::make_counting_transform_iterator(
+    0, [](auto i) { return std::format("{:012d}", i); });
+  auto col0 = cudf::test::strings_column_wrapper(str1_elements, str1_elements + num_rows);
 
   auto col1_data = random_values<int32_t>(num_rows);
   auto col2_data = random_values<int32_t>(num_rows);
@@ -915,12 +902,9 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexNullColumn)
   auto col2 = cudf::test::fixed_width_column_wrapper<int32_t>(col2_data.begin(), col2_data.end());
 
   // mixed length strings
-  auto str2_elements = cudf::detail::make_counting_transform_iterator(0, [](auto i) {
-    std::array<char, 30> buf;
-    sprintf(buf.data(), "%d", i);
-    return std::string(buf.data());
-  });
-  auto col3          = cudf::test::strings_column_wrapper(str2_elements, str2_elements + num_rows);
+  auto str2_elements =
+    cudf::detail::make_counting_transform_iterator(0, [](auto i) { return std::format("{}", i); });
+  auto col3 = cudf::test::strings_column_wrapper(str2_elements, str2_elements + num_rows);
 
   auto expected = table_view{{col0, col1, col2, col3}};
 
@@ -933,7 +917,7 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexNullColumn)
   cudf::io::write_parquet(out_opts);
 
   auto const source = cudf::io::datasource::create(filepath);
-  cudf::io::parquet::detail::FileMetaData fmd;
+  cudf::io::parquet::FileMetaData fmd;
 
   read_footer(source, &fmd);
 
@@ -993,9 +977,9 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexNullColumn)
 
 TEST_P(ParquetV2Test, CheckColumnOffsetIndexStruct)
 {
-  auto const is_v2             = GetParam();
-  auto const expected_hdr_type = is_v2 ? cudf::io::parquet::detail::PageType::DATA_PAGE_V2
-                                       : cudf::io::parquet::detail::PageType::DATA_PAGE;
+  auto const is_v2 = GetParam();
+  auto const expected_hdr_type =
+    is_v2 ? cudf::io::parquet::PageType::DATA_PAGE_V2 : cudf::io::parquet::PageType::DATA_PAGE;
 
   auto c0 = testdata::ascending<uint32_t>();
 
@@ -1030,7 +1014,7 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexStruct)
   cudf::io::write_parquet(out_opts);
 
   auto const source = cudf::io::datasource::create(filepath);
-  cudf::io::parquet::detail::FileMetaData fmd;
+  cudf::io::parquet::FileMetaData fmd;
 
   read_footer(source, &fmd);
 
@@ -1079,9 +1063,9 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexStruct)
 
 TEST_P(ParquetV2Test, CheckColumnOffsetIndexStructNulls)
 {
-  auto const is_v2             = GetParam();
-  auto const expected_hdr_type = is_v2 ? cudf::io::parquet::detail::PageType::DATA_PAGE_V2
-                                       : cudf::io::parquet::detail::PageType::DATA_PAGE;
+  auto const is_v2 = GetParam();
+  auto const expected_hdr_type =
+    is_v2 ? cudf::io::parquet::PageType::DATA_PAGE_V2 : cudf::io::parquet::PageType::DATA_PAGE;
 
   auto validity2 =
     cudf::detail::make_counting_transform_iterator(0, [](cudf::size_type i) { return i % 2; });
@@ -1123,7 +1107,7 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexStructNulls)
   cudf::io::write_parquet(out_opts);
 
   auto const source = cudf::io::datasource::create(filepath);
-  cudf::io::parquet::detail::FileMetaData fmd;
+  cudf::io::parquet::FileMetaData fmd;
 
   read_footer(source, &fmd);
 
@@ -1180,9 +1164,9 @@ TEST_P(ParquetV2Test, CheckColumnOffsetIndexStructNulls)
 
 TEST_P(ParquetV2Test, CheckColumnIndexListWithNulls)
 {
-  auto const is_v2             = GetParam();
-  auto const expected_hdr_type = is_v2 ? cudf::io::parquet::detail::PageType::DATA_PAGE_V2
-                                       : cudf::io::parquet::detail::PageType::DATA_PAGE;
+  auto const is_v2 = GetParam();
+  auto const expected_hdr_type =
+    is_v2 ? cudf::io::parquet::PageType::DATA_PAGE_V2 : cudf::io::parquet::PageType::DATA_PAGE;
 
   using cudf::test::iterators::null_at;
   using cudf::test::iterators::nulls_at;
@@ -1330,7 +1314,7 @@ TEST_P(ParquetV2Test, CheckColumnIndexListWithNulls)
   cudf::io::write_parquet(out_opts);
 
   auto const source = cudf::io::datasource::create(filepath);
-  cudf::io::parquet::detail::FileMetaData fmd;
+  cudf::io::parquet::FileMetaData fmd;
 
   read_footer(source, &fmd);
 
@@ -1399,7 +1383,7 @@ TEST_P(ParquetV2Test, CheckColumnIndexListWithNulls)
 
 TEST_P(ParquetV2Test, CheckEncodings)
 {
-  using cudf::io::parquet::detail::Encoding;
+  using cudf::io::parquet::Encoding;
   constexpr auto num_rows = 100'000;
   auto const is_v2        = GetParam();
 
@@ -1432,7 +1416,7 @@ TEST_P(ParquetV2Test, CheckEncodings)
   };
 
   auto const source = cudf::io::datasource::create(filepath);
-  cudf::io::parquet::detail::FileMetaData fmd;
+  cudf::io::parquet::FileMetaData fmd;
 
   read_footer(source, &fmd);
   auto const& chunk0_enc = fmd.row_groups[0].columns[0].meta_data.encodings;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#pragma once
 
 #include <cudf/strings/detail/convert/is_float.cuh>
 #include <cudf/strings/string_view.cuh>
@@ -44,7 +46,7 @@ __device__ inline double stod(string_view const& d_str)
     ++in_ptr;
   }
 
-#ifndef CUDF_JIT_UDF
+#ifndef CUDF_RUNTIME_JIT
   constexpr double infinity      = std::numeric_limits<double>::infinity();
   constexpr uint64_t max_holding = (std::numeric_limits<uint64_t>::max() - 9L) / 10L;
 #else

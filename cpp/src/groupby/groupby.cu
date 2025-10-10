@@ -124,6 +124,14 @@ struct empty_column_constructor {
     }
     if constexpr (k == aggregation::Kind::MERGE_HISTOGRAM) { return empty_like(values); }
 
+    if constexpr (k == aggregation::Kind::SUM_WITH_OVERFLOW) {
+      // SUM_WITH_OVERFLOW returns a struct with sum (int64_t) and overflow (bool) children
+      std::vector<std::unique_ptr<cudf::column>> children;
+      children.push_back(make_empty_column(cudf::data_type{cudf::type_id::INT64}));
+      children.push_back(make_empty_column(cudf::data_type{cudf::type_id::BOOL8}));
+      return make_structs_column(0, std::move(children), 0, {}, stream, mr);
+    }
+
     if constexpr (k == aggregation::Kind::RANK) {
       auto const& rank_agg = dynamic_cast<cudf::detail::rank_aggregation const&>(agg);
       if (rank_agg._method == cudf::rank_method::AVERAGE or
@@ -258,7 +266,7 @@ groupby::groups groupby::get_groups(table_view values,
   auto grouped_keys = helper().sorted_keys(stream, mr);
 
   auto const& group_offsets       = helper().group_offsets(stream);
-  auto const group_offsets_vector = cudf::detail::make_std_vector_sync(group_offsets, stream);
+  auto const group_offsets_vector = cudf::detail::make_std_vector(group_offsets, stream);
 
   if (not values.is_empty()) {
     auto grouped_values = cudf::detail::gather(values,

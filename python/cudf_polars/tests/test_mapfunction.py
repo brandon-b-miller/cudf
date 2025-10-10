@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
@@ -6,20 +6,12 @@ import pytest
 
 import polars as pl
 
+from cudf_polars.dsl.translate import Translator
 from cudf_polars.testing.asserts import (
     assert_gpu_result_equal,
     assert_ir_translation_raises,
 )
-
-
-def test_merge_sorted_raises():
-    df1 = pl.LazyFrame({"a": [1, 6, 9], "b": [1, -10, 4]})
-    df2 = pl.LazyFrame({"a": [-1, 5, 11, 20], "b": [2, 7, -4, None]})
-    df3 = pl.LazyFrame({"a": [-10, 20, 21], "b": [1, 2, 3]})
-
-    q = df1.merge_sorted(df2, key="a").merge_sorted(df3, key="a")
-
-    assert_ir_translation_raises(q, NotImplementedError)
+from cudf_polars.utils.versions import POLARS_VERSION_LT_131
 
 
 def test_explode_multiple_raises():
@@ -49,7 +41,12 @@ def test_rename_duplicate_raises(mapping):
 
     q = df.rename(mapping)
 
-    assert_ir_translation_raises(q, NotImplementedError)
+    if POLARS_VERSION_LT_131:
+        assert_ir_translation_raises(q, NotImplementedError)
+    else:
+        # Now raises before translation
+        with pytest.raises(pl.exceptions.DuplicateError, match="is duplicate"):
+            assert_ir_translation_raises(q, NotImplementedError)
 
 
 @pytest.mark.parametrize(
@@ -93,3 +90,24 @@ def test_unpivot_defaults():
     )
     q = df.unpivot(index="d")
     assert_gpu_result_equal(q)
+
+
+def test_with_row_index_defaults():
+    lf = pl.LazyFrame(
+        {
+            "a": [1, 3, 5],
+            "b": [2, 4, 6],
+        }
+    )
+    q = lf.with_row_index()
+    assert_gpu_result_equal(q)
+
+
+def test_unique_hash():
+    # https://github.com/rapidsai/cudf/pull/19121#issuecomment-2959305678
+    a = pl.LazyFrame({"a": [1, 2, 3]}).rename({"a": "A"})
+    b = pl.LazyFrame({"a": [4, 5, 6]}).rename({"a": "A"})
+    ir_a = Translator(a._ldf.visit(), pl.GPUEngine()).translate_ir()
+    ir_b = Translator(b._ldf.visit(), pl.GPUEngine()).translate_ir()
+
+    assert hash(ir_a) != hash(ir_b)

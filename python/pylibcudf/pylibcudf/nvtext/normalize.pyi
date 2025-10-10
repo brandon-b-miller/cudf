@@ -1,6 +1,27 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.
+# Copyright (c) 2024-2025, NVIDIA CORPORATION.
+
+from rmm.pylibrmm.memory_resource import DeviceMemoryResource
+from rmm.pylibrmm.stream import Stream
 
 from pylibcudf.column import Column
 
-def normalize_spaces(input: Column) -> Column: ...
-def normalize_characters(input: Column, do_lower_case: bool) -> Column: ...
+class CharacterNormalizer:
+    def __init__(
+        self,
+        do_lower_case: bool,
+        special_tokens: Column,
+        stream: Stream | None = None,
+        mr: DeviceMemoryResource | None = None,
+    ): ...
+
+def normalize_spaces(
+    input: Column,
+    stream: Stream | None = None,
+    mr: DeviceMemoryResource | None = None,
+) -> Column: ...
+def normalize_characters(
+    input: Column,
+    normalizer: CharacterNormalizer,
+    stream: Stream | None = None,
+    mr: DeviceMemoryResource | None = None,
+) -> Column: ...

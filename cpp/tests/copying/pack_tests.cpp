@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2021-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,14 @@
  * limitations under the License.
  */
 
+#include <tests/copying/slice_tests.cuh>
+
 #include <cudf_test/base_fixture.hpp>
 #include <cudf_test/column_wrapper.hpp>
 #include <cudf_test/table_utilities.hpp>
 
 #include <cudf/contiguous_split.hpp>
+#include <cudf/copying.hpp>
 
 struct PackUnpackTest : public cudf::test::BaseFixture {
   void run_test(cudf::table_view const& t)
@@ -302,8 +305,11 @@ std::vector<std::unique_ptr<cudf::column>> generate_list_of_struct()
   cudf::test::fixed_width_column_wrapper<int> offsets{0, 1, 4, 5, 7, 7, 10, 13, 14, 16};
   auto [null_mask, null_count] =
     cudf::test::detail::make_null_mask(list_validity.begin(), list_validity.begin() + 9);
-  auto list = cudf::make_lists_column(
-    9, offsets.release(), struct_column.release(), null_count, std::move(null_mask));
+  auto list = [&] {
+    auto tmp = cudf::make_lists_column(
+      9, offsets.release(), struct_column.release(), null_count, std::move(null_mask));
+    return cudf::purge_nonempty_nulls(tmp->view());
+  }();
 
   std::vector<std::unique_ptr<cudf::column>> out;
   out.push_back(std::move(list));
@@ -577,4 +583,18 @@ TEST_F(PackUnpackTest, SlicedEmpty)
   auto packed   = cudf::pack(t);
   auto unpacked = cudf::unpack(packed);
   CUDF_TEST_EXPECT_TABLES_EQUIVALENT(t, unpacked);
+}
+
+TEST_F(PackUnpackTest, LongOffsets)
+{
+  auto str = make_long_offsets_string_column();
+  cudf::table_view tbl({*str});
+  this->run_test(tbl);
+}
+
+TEST_F(PackUnpackTest, DISABLED_LongOffsetsAndChars)
+{
+  auto str = make_long_offsets_and_chars_string_column();
+  cudf::table_view tbl({*str});
+  this->run_test(tbl);
 }

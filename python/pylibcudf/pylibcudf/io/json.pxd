@@ -2,12 +2,19 @@
 from libcpp cimport bool
 from libcpp.map cimport map
 from libcpp.vector cimport vector
+
+from rmm.pylibrmm.stream cimport Stream
+from rmm.pylibrmm.memory_resource cimport DeviceMemoryResource
+
 from pylibcudf.io.types cimport (
     SinkInfo,
     SourceInfo,
     TableWithMetadata,
     compression_type,
 )
+from pylibcudf.column cimport Column
+from pylibcudf.scalar cimport Scalar
+
 from pylibcudf.libcudf.io.json cimport (
     json_recovery_mode_t,
     json_reader_options,
@@ -15,8 +22,12 @@ from pylibcudf.libcudf.io.json cimport (
     json_writer_options,
     json_writer_options_builder,
 )
+
 from pylibcudf.libcudf.types cimport size_type
+
 from pylibcudf.table cimport Table
+
+from pylibcudf.types cimport DataType
 
 
 cdef class JsonReaderOptions:
@@ -68,7 +79,19 @@ cdef class JsonReaderOptionsBuilder:
     cpdef JsonReaderOptionsBuilder unquoted_control_chars(self, bool val)
     cpdef build(self)
 
-cpdef TableWithMetadata read_json(JsonReaderOptions options)
+cpdef TableWithMetadata read_json(
+    JsonReaderOptions options, Stream stream = *, DeviceMemoryResource mr = *
+)
+
+cpdef TableWithMetadata read_json_from_string_column(
+    Column input,
+    Scalar separator,
+    Scalar narep,
+    list dtypes = *,
+    compression_type compression = *,
+    json_recovery_mode_t recovery_mode = *,
+    Stream stream = *,
+    DeviceMemoryResource mr = *)
 
 cdef class JsonWriterOptions:
     cdef json_writer_options c_obj
@@ -88,11 +111,16 @@ cdef class JsonWriterOptionsBuilder:
     cpdef JsonWriterOptionsBuilder include_nulls(self, bool val)
     cpdef JsonWriterOptionsBuilder lines(self, bool val)
     cpdef JsonWriterOptionsBuilder compression(self, compression_type comptype)
+    cpdef JsonWriterOptionsBuilder utf8_escaped(self, bool val)
     cpdef JsonWriterOptions build(self)
 
-cpdef void write_json(JsonWriterOptions options)
+cpdef void write_json(JsonWriterOptions options, Stream stream = *)
+
+cpdef bool is_supported_write_json(DataType type)
 
 cpdef tuple chunked_read_json(
     JsonReaderOptions options,
     int chunk_size= *,
+    Stream stream = *,
+    DeviceMemoryResource mr = *,
 )

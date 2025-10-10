@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, NVIDIA CORPORATION.
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,15 @@
 #include <cudf_test/base_fixture.hpp>
 #include <cudf_test/column_wrapper.hpp>
 #include <cudf_test/default_stream.hpp>
+#include <cudf_test/testing_main.hpp>
 
+#include <cudf/ast/expressions.hpp>
 #include <cudf/column/column.hpp>
-#include <cudf/join.hpp>
+#include <cudf/join/conditional_join.hpp>
+#include <cudf/join/filtered_join.hpp>
+#include <cudf/join/join.hpp>
+#include <cudf/join/mixed_join.hpp>
+#include <cudf/join/sort_merge_join.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/types.hpp>
 
@@ -58,6 +64,12 @@ TEST_F(JoinTest, InnerJoin)
   cudf::inner_join(table0, table1, cudf::null_equality::EQUAL, cudf::test::get_default_stream());
 }
 
+TEST_F(JoinTest, SortMergeInnerJoin)
+{
+  cudf::sort_merge_inner_join(
+    table0, table1, cudf::null_equality::EQUAL, cudf::test::get_default_stream());
+}
+
 TEST_F(JoinTest, LeftJoin)
 {
   cudf::left_join(table0, table1, cudf::null_equality::EQUAL, cudf::test::get_default_stream());
@@ -70,14 +82,20 @@ TEST_F(JoinTest, FullJoin)
 
 TEST_F(JoinTest, LeftSemiJoin)
 {
-  cudf::left_semi_join(
-    table0, table1, cudf::null_equality::EQUAL, cudf::test::get_default_stream());
+  cudf::filtered_join obj(table1,
+                          cudf::null_equality::EQUAL,
+                          cudf::set_as_build_table::RIGHT,
+                          cudf::test::get_default_stream());
+  [[maybe_unused]] auto join_result = obj.semi_join(table0, cudf::test::get_default_stream());
 }
 
 TEST_F(JoinTest, LeftAntiJoin)
 {
-  cudf::left_anti_join(
-    table0, table1, cudf::null_equality::EQUAL, cudf::test::get_default_stream());
+  cudf::filtered_join obj(table1,
+                          cudf::null_equality::EQUAL,
+                          cudf::set_as_build_table::RIGHT,
+                          cudf::test::get_default_stream());
+  [[maybe_unused]] auto join_result = obj.anti_join(table0, cudf::test::get_default_stream());
 }
 
 TEST_F(JoinTest, CrossJoin) { cudf::cross_join(table0, table1, cudf::test::get_default_stream()); }
@@ -215,3 +233,5 @@ TEST_F(JoinTest, ConditionalLeftAntiJoinSize)
   cudf::conditional_left_anti_join_size(
     table0, table1, left_zero_eq_right_zero, cudf::test::get_default_stream());
 }
+
+CUDF_TEST_PROGRAM_MAIN()

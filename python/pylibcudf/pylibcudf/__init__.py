@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2024, NVIDIA CORPORATION.
+# Copyright (c) 2023-2025, NVIDIA CORPORATION.
 
 # If libcudf was installed as a wheel, we must request it to load the library symbols.
 # Otherwise, we assume that the library was installed in a system path that ld can find.
@@ -18,7 +18,6 @@ from . import (
     contiguous_split,
     copying,
     datetime,
-    experimental,
     expressions,
     filling,
     groupby,
@@ -33,6 +32,7 @@ from . import (
     null_mask,
     nvtext,
     partitioning,
+    prefetch,
     quantiles,
     reduce,
     replace,
@@ -48,6 +48,7 @@ from . import (
     transpose,
     types,
     unary,
+    utilities,
 )
 from .column import Column
 from .gpumemoryview import gpumemoryview
@@ -69,7 +70,6 @@ __all__ = [
     "contiguous_split",
     "copying",
     "datetime",
-    "experimental",
     "expressions",
     "filling",
     "gpumemoryview",
@@ -85,6 +85,7 @@ __all__ = [
     "null_mask",
     "nvtext",
     "partitioning",
+    "prefetch",
     "quantiles",
     "reduce",
     "replace",
@@ -100,4 +101,5 @@ __all__ = [
     "transpose",
     "types",
     "unary",
+    "utilities",
 ]

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2022-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
+#pragma once
+
 #include <cudf/detail/cuco_helpers.hpp>
+#include <cudf/detail/row_operator/row_operators.cuh>
 #include <cudf/stream_compaction.hpp>
-#include <cudf/table/experimental/row_operators.cuh>
 #include <cudf/types.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
@@ -25,8 +27,8 @@
 
 #include <cuco/static_set.cuh>
 #include <cuda/functional>
+#include <cuda/std/iterator>
 #include <thrust/copy.h>
-#include <thrust/distance.h>
 #include <thrust/iterator/counting_iterator.h>
 
 namespace cudf::detail {
@@ -53,10 +55,10 @@ using distinct_set_t =
                    cuco::extent<int64_t>,
                    cuda::thread_scope_device,
                    RowEqual,
-                   cuco::linear_probing<1,
-                                        cudf::experimental::row::hash::device_row_hasher<
-                                          cudf::hashing::detail::default_hash,
-                                          cudf::nullate::DYNAMIC>>,
+                   cuco::linear_probing<
+                     1,
+                     cudf::detail::row::hash::device_row_hasher<cudf::hashing::detail::default_hash,
+                                                                cudf::nullate::DYNAMIC>>,
                    cudf::detail::cuco_allocator<char>,
                    cuco::storage<1>>;
 

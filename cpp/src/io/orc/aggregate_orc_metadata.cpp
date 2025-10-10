@@ -19,7 +19,9 @@
 #include "io/utilities/row_selection.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <numeric>
+#include <utility>
 
 namespace cudf::io::orc::detail {
 
@@ -27,7 +29,7 @@ column_hierarchy::column_hierarchy(nesting_map child_map) : children{std::move(c
 {
   // Sort columns by nesting levels
   std::function<void(size_type, int32_t)> levelize = [&](size_type id, int32_t level) {
-    if (static_cast<int32_t>(levels.size()) == level) levels.emplace_back();
+    if (std::cmp_equal(levels.size(), level)) levels.emplace_back();
 
     levels[level].push_back({id, static_cast<int32_t>(children[id].size())});
 
@@ -259,7 +261,7 @@ aggregate_orc_metadata::select_stripes(
       auto const buffer =
         per_file_metadata[mapping.source_idx].source->host_read(sf_comp_offset, sf_comp_length);
       auto sf_data = per_file_metadata[mapping.source_idx].decompressor->decompress_blocks(
-        {buffer->data(), buffer->size()}, stream);
+        {buffer->data(), buffer->size()});
       protobuf_reader(sf_data.data(), sf_data.size())
         .read(per_file_metadata[mapping.source_idx].stripefooters[i]);
       mapping.stripe_info[i].stripe_footer =

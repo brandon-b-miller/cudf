@@ -18,6 +18,7 @@
 
 #include <cudf/aggregation.hpp>
 #include <cudf/detail/utilities/assert.cuh>
+#include <cudf/structs/struct_view.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/span.hpp>
@@ -39,6 +40,8 @@ class simple_aggregations_collector {  // Declares the interface for the simple 
                                                           aggregation const& agg);
   virtual std::vector<std::unique_ptr<aggregation>> visit(data_type col_type,
                                                           class sum_aggregation const& agg);
+  virtual std::vector<std::unique_ptr<aggregation>> visit(
+    data_type col_type, class sum_with_overflow_aggregation const& agg);
   virtual std::vector<std::unique_ptr<aggregation>> visit(data_type col_type,
                                                           class product_aggregation const& agg);
   virtual std::vector<std::unique_ptr<aggregation>> visit(data_type col_type,
@@ -109,6 +112,8 @@ class simple_aggregations_collector {  // Declares the interface for the simple 
                                                           class tdigest_aggregation const& agg);
   virtual std::vector<std::unique_ptr<aggregation>> visit(
     data_type col_type, class merge_tdigest_aggregation const& agg);
+  virtual std::vector<std::unique_ptr<aggregation>> visit(data_type col_type,
+                                                          class bitwise_aggregation const& agg);
 };
 
 class aggregation_finalizer {  // Declares the interface for the finalizer
@@ -116,6 +121,7 @@ class aggregation_finalizer {  // Declares the interface for the finalizer
   // Declare overloads for each kind of a agg to dispatch
   virtual void visit(aggregation const& agg);
   virtual void visit(class sum_aggregation const& agg);
+  virtual void visit(class sum_with_overflow_aggregation const& agg);
   virtual void visit(class product_aggregation const& agg);
   virtual void visit(class min_aggregation const& agg);
   virtual void visit(class max_aggregation const& agg);
@@ -151,6 +157,7 @@ class aggregation_finalizer {  // Declares the interface for the finalizer
   virtual void visit(class merge_tdigest_aggregation const& agg);
   virtual void visit(class ewma_aggregation const& agg);
   virtual void visit(class ewmvar_aggregation const& agg);
+  virtual void visit(class bitwise_aggregation const& agg);
 };
 
 /**
@@ -168,6 +175,28 @@ class sum_aggregation final : public rolling_aggregation,
   [[nodiscard]] std::unique_ptr<aggregation> clone() const override
   {
     return std::make_unique<sum_aggregation>(*this);
+  }
+  std::vector<std::unique_ptr<aggregation>> get_simple_aggregations(
+    data_type col_type, simple_aggregations_collector& collector) const override
+  {
+    return collector.visit(col_type, *this);
+  }
+  void finalize(aggregation_finalizer& finalizer) const override { finalizer.visit(*this); }
+};
+
+/**
+ * @brief Derived class for specifying a sum_with_overflow aggregation
+ */
+class sum_with_overflow_aggregation final : public groupby_aggregation,
+                                            public groupby_scan_aggregation,
+                                            public reduce_aggregation,
+                                            public segmented_reduce_aggregation {
+ public:
+  sum_with_overflow_aggregation() : aggregation(SUM_WITH_OVERFLOW) {}
+
+  [[nodiscard]] std::unique_ptr<aggregation> clone() const override
+  {
+    return std::make_unique<sum_with_overflow_aggregation>(*this);
   }
   std::vector<std::unique_ptr<aggregation>> get_simple_aggregations(
     data_type col_type, simple_aggregations_collector& collector) const override
@@ -253,7 +282,8 @@ class max_aggregation final : public rolling_aggregation,
  */
 class count_aggregation final : public rolling_aggregation,
                                 public groupby_aggregation,
-                                public groupby_scan_aggregation {
+                                public groupby_scan_aggregation,
+                                public reduce_aggregation {
  public:
   count_aggregation(aggregation::Kind kind) : aggregation(kind) {}
 
@@ -1261,6 +1291,41 @@ class merge_tdigest_aggregation final : public groupby_aggregation, public reduc
 };
 
 /**
+ * @brief Derived aggregation class for specifying BITWISE_AGG aggregation.
+ */
+class bitwise_aggregation final : public groupby_aggregation, public reduce_aggregation {
+ public:
+  explicit bitwise_aggregation(bitwise_op bit_op_) : aggregation{BITWISE_AGG}, bit_op{bit_op_} {}
+
+  bitwise_op bit_op;
+
+  [[nodiscard]] bool is_equal(aggregation const& _other) const override
+  {
+    if (!this->aggregation::is_equal(_other)) { return false; }
+    auto const& other = dynamic_cast<bitwise_aggregation const&>(_other);
+    return bit_op == other.bit_op;
+  }
+
+  [[nodiscard]] size_t do_hash() const override
+  {
+    return this->aggregation::do_hash() ^ static_cast<size_t>(bit_op);
+  }
+
+  [[nodiscard]] std::unique_ptr<aggregation> clone() const override
+  {
+    return std::make_unique<bitwise_aggregation>(*this);
+  }
+
+  std::vector<std::unique_ptr<aggregation>> get_simple_aggregations(
+    data_type col_type, simple_aggregations_collector& collector) const override
+  {
+    return collector.visit(col_type, *this);
+  }
+
+  void finalize(aggregation_finalizer& finalizer) const override { finalizer.visit(*this); }
+};
+
+/**
  * @brief Sentinel value used for `ARGMAX` aggregation.
  *
  * The output column for an `ARGMAX` aggregation is initialized with the
@@ -1355,9 +1420,8 @@ constexpr bool is_sum_product_agg(aggregation::Kind k)
 
 // Summing/Multiplying integers of any type, always use int64_t accumulator
 template <typename Source, aggregation::Kind k>
-struct target_type_impl<Source,
-                        k,
-                        std::enable_if_t<std::is_integral_v<Source> && is_sum_product_agg(k)>> {
+  requires(std::is_integral_v<Source> && is_sum_product_agg(k))
+struct target_type_impl<Source, k> {
   using type = int64_t;
 };
 
@@ -1372,10 +1436,8 @@ struct target_type_impl<
 
 // Summing/Multiplying float/doubles, use same type accumulator
 template <typename Source, aggregation::Kind k>
-struct target_type_impl<
-  Source,
-  k,
-  std::enable_if_t<std::is_floating_point_v<Source> && is_sum_product_agg(k)>> {
+  requires(std::is_floating_point_v<Source> && is_sum_product_agg(k))
+struct target_type_impl<Source, k> {
   using type = Source;
 };
 
@@ -1385,6 +1447,12 @@ struct target_type_impl<Source,
                         k,
                         std::enable_if_t<is_duration<Source>() && (k == aggregation::SUM)>> {
   using type = Source;
+};
+
+// SUM_WITH_OVERFLOW always outputs a struct {sum: int64_t, overflow: bool} regardless of input type
+template <typename Source>
+struct target_type_impl<Source, aggregation::SUM_WITH_OVERFLOW> {
+  using type = struct_view;  // SUM_WITH_OVERFLOW outputs a struct with sum and overflow fields
 };
 
 // Always use `double` for M2
@@ -1489,12 +1557,14 @@ struct target_type_impl<Source, aggregation::LAG> {
 
 // Always use list for MERGE_LISTS
 template <typename Source>
+  requires cuda::std::is_same_v<Source, cudf::list_view>
 struct target_type_impl<Source, aggregation::MERGE_LISTS> {
   using type = list_view;
 };
 
 // Always use list for MERGE_SETS
 template <typename Source>
+  requires cuda::std::is_same_v<Source, cudf::list_view>
 struct target_type_impl<Source, aggregation::MERGE_SETS> {
   using type = list_view;
 };
@@ -1547,6 +1617,14 @@ struct target_type_impl<SourceType, aggregation::HOST_UDF> {
   using type = struct_view;
 };
 
+// BITWISE_AGG returns the same type as input for integral types.
+template <typename Source>
+struct target_type_impl<Source,
+                        aggregation::BITWISE_AGG,
+                        std::enable_if_t<std::is_integral_v<Source>>> {
+  using type = Source;
+};
+
 /**
  * @brief Helper alias to get the accumulator type for performing aggregation
  * `k` on elements of type `Source`
@@ -1597,6 +1675,8 @@ CUDF_HOST_DEVICE inline decltype(auto) aggregation_dispatcher(aggregation::Kind 
   switch (k) {
     case aggregation::SUM:
       return f.template operator()<aggregation::SUM>(std::forward<Ts>(args)...);
+    case aggregation::SUM_WITH_OVERFLOW:
+      return f.template operator()<aggregation::SUM_WITH_OVERFLOW>(std::forward<Ts>(args)...);
     case aggregation::PRODUCT:
       return f.template operator()<aggregation::PRODUCT>(std::forward<Ts>(args)...);
     case aggregation::MIN:
@@ -1668,6 +1748,8 @@ CUDF_HOST_DEVICE inline decltype(auto) aggregation_dispatcher(aggregation::Kind 
       return f.template operator()<aggregation::EWMVAR>(std::forward<Ts>(args)...);
     case aggregation::HOST_UDF:
       return f.template operator()<aggregation::HOST_UDF>(std::forward<Ts>(args)...);
+    case aggregation::BITWISE_AGG:
+      return f.template operator()<aggregation::BITWISE_AGG>(std::forward<Ts>(args)...);
     default: {
 #ifndef __CUDA_ARCH__
       CUDF_FAIL("Unsupported aggregation.");
@@ -1761,6 +1843,25 @@ constexpr inline bool is_valid_aggregation()
  * @param k The aggregation to perform
  */
 bool is_valid_aggregation(data_type source, aggregation::Kind k);
+
+/**
+ * @brief Initializes each column in a table with a corresponding identity value
+ * of an aggregation operation.
+ *
+ * The `i`th column will be initialized with the identity value of the `i`th
+ * aggregation operation in `aggs`.
+ *
+ * @throw cudf::logic_error if column type and corresponding agg are incompatible
+ * @throw cudf::logic_error if column type is not fixed-width
+ *
+ * @param table The table of columns to initialize.
+ * @param aggs A span of aggregation operations corresponding to the table
+ * columns. The aggregations determine the identity value for each column.
+ * @param stream CUDA stream used for device memory operations and kernel launches.
+ */
+void initialize_with_identity(mutable_table_view& table,
+                              host_span<cudf::aggregation::Kind const> aggs,
+                              rmm::cuda_stream_view stream);
 
 }  // namespace detail
 }  // namespace CUDF_EXPORT cudf

@@ -15,8 +15,6 @@
  */
 
 #include "../io/json/json_utils.cuh"
-#include "io/comp/comp.hpp"
-#include "io/comp/io_uncomp.hpp"
 #include "large_strings_fixture.hpp"
 
 #include <cudf_test/column_wrapper.hpp>
@@ -25,6 +23,7 @@
 
 #include <cudf/concatenate.hpp>
 #include <cudf/io/datasource.hpp>
+#include <cudf/io/detail/codec.hpp>
 #include <cudf/io/json.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/span.hpp>
@@ -74,8 +73,7 @@ TEST_P(JsonLargeReaderTest, MultiBatch)
     cdata = cudf::io::detail::compress(
       comptype,
       cudf::host_span<uint8_t const>(reinterpret_cast<uint8_t const*>(json_string.data()),
-                                     json_string.size()),
-      cudf::get_default_stream());
+                                     json_string.size()));
   } else
     cdata = std::vector<uint8_t>(
       reinterpret_cast<uint8_t const*>(json_string.data()),
@@ -174,8 +172,7 @@ TEST_P(JsonLargeReaderTest, MultiBatchWithNulls)
     cdata = cudf::io::detail::compress(
       comptype,
       cudf::host_span<uint8_t const>(reinterpret_cast<uint8_t const*>(json_string.data()),
-                                     json_string.size()),
-      cudf::get_default_stream());
+                                     json_string.size()));
   } else
     cdata = std::vector<uint8_t>(
       reinterpret_cast<uint8_t const*>(json_string.data()),
@@ -234,8 +231,7 @@ TEST_P(JsonLargeReaderTest, MultiBatchDoubleBufferInput)
     cdata = cudf::io::detail::compress(
       comptype,
       cudf::host_span<uint8_t const>(reinterpret_cast<uint8_t const*>(json_string.data()),
-                                     json_string.size()),
-      cudf::get_default_stream());
+                                     json_string.size()));
   } else {
     cdata = std::vector<uint8_t>(
       reinterpret_cast<uint8_t const*>(json_string.data()),
@@ -305,8 +301,7 @@ TEST_P(JsonLargeReaderTest, OverBatchLimitLine)
     cdata = cudf::io::detail::compress(
       comptype,
       cudf::host_span<uint8_t const>(reinterpret_cast<uint8_t const*>(json_string.data()),
-                                     json_string.size()),
-      cudf::get_default_stream());
+                                     json_string.size()));
   } else {
     cdata = std::vector<uint8_t>(
       reinterpret_cast<uint8_t const*>(json_string.data()),

@@ -21,7 +21,6 @@
 
 #include "csv_common.hpp"
 #include "csv_gpu.hpp"
-#include "io/comp/io_uncomp.hpp"
 #include "io/utilities/column_buffer.hpp"
 #include "io/utilities/hostdevice_vector.hpp"
 #include "io/utilities/parsing_utils.cuh"
@@ -32,6 +31,7 @@
 #include <cudf/detail/utilities/visitor_overload.hpp>
 #include <cudf/io/csv.hpp>
 #include <cudf/io/datasource.hpp>
+#include <cudf/io/detail/codec.hpp>
 #include <cudf/io/detail/csv.hpp>
 #include <cudf/io/types.hpp>
 #include <cudf/logger.hpp>
@@ -447,6 +447,9 @@ std::pair<rmm::device_uvector<char>, selected_rows_offsets> select_data_and_row_
     CUDF_EXPECTS(reader_opts.get_compression() == compression_type::NONE,
                  "Reading compressed data using `byte range` is unsupported");
   }
+
+  CUDF_EXPECTS(range_offset <= source->size(), "Invalid byte range offset", std::invalid_argument);
+
   // TODO: Allow parsing the header outside the mapped range
   CUDF_EXPECTS((range_offset == 0 || reader_opts.get_header() < 0),
                "byte_range offset with header not supported");
@@ -670,7 +673,7 @@ std::vector<column_buffer> decode_data(parse_options const& parse_opts,
     d_valid_counts,
     stream);
 
-  auto const h_valid_counts = cudf::detail::make_host_vector_sync(d_valid_counts, stream);
+  auto const h_valid_counts = cudf::detail::make_host_vector(d_valid_counts, stream);
   for (int i = 0; i < num_active_columns; ++i) {
     out_buffers[i].null_count() = num_records - h_valid_counts[i];
   }
@@ -949,8 +952,8 @@ table_with_metadata read_csv(cudf::io::datasource* source,
     }
   } else {
     // Create empty columns
-    for (size_t i = 0; i < column_types.size(); ++i) {
-      out_columns.emplace_back(make_empty_column(column_types[i]));
+    for (auto column_type : column_types) {
+      out_columns.emplace_back(make_empty_column(column_type));
     }
     // Handle empty metadata
     for (int col = 0; col < num_actual_columns; ++col) {
@@ -998,7 +1001,7 @@ cudf::detail::trie create_na_trie(char quotechar,
 
   // Pandas treats empty strings as N/A if empty fields are treated as N/A
   if (std::find(na_values.begin(), na_values.end(), "") != na_values.end()) {
-    na_values.push_back(std::string(2, quotechar));
+    na_values.emplace_back(2, quotechar);
   }
 
   return cudf::detail::create_serialized_trie(na_values, stream);

@@ -8,6 +8,7 @@ import pytest
 
 import cudf
 from cudf.core.byte_pair_encoding import BytePairEncoder
+from cudf.core.character_normalizer import CharacterNormalizer
 from cudf.core.tokenize_vocabulary import TokenizeVocabulary
 from cudf.testing import assert_eq
 
@@ -251,7 +252,8 @@ def test_normalize_characters():
         ]
     )
 
-    actual = strings.str.normalize_characters()
+    normalizer_lower = CharacterNormalizer(True)
+    actual = normalizer_lower.normalize(strings.str)
     assert type(expected) is type(actual)
     assert_eq(expected, actual)
 
@@ -265,7 +267,9 @@ def test_normalize_characters():
             "Stock ^   $ 1",
         ]
     )
-    actual = strings.str.normalize_characters(do_lower=False)
+
+    normalizer = CharacterNormalizer(False)
+    actual = normalizer.normalize(strings.str)
     assert type(expected) is type(actual)
     assert_eq(expected, actual)
 
@@ -912,7 +916,7 @@ def test_minhash():
             cudf.Series([0, 0, 0], dtype=np.uint64),
         ]
     )
-    actual = strings.str.minhash64(0, a=params, b=params, width=5)
+    actual = strings.str.minhash(0, a=params, b=params, width=5)
     assert_eq(expected, actual)
 
     # test wrong seed types
@@ -921,9 +925,45 @@ def test_minhash():
     with pytest.raises(ValueError):
         params = cudf.Series([0, 1, 2], dtype=np.int32)
         strings.str.minhash(1, a=params, b=params, width=6)
+
+
+def test_minhash_ngrams():
+    strings = cudf.Series(
+        [["this", "is", "my"], ["favorite", "book", "today"]]
+    )
+
+    params = cudf.Series([1, 2, 3], dtype=np.uint32)
+    expected = cudf.Series(
+        [
+            cudf.Series([416367548, 832735096, 1249102644], dtype=np.uint32),
+            cudf.Series([1408797893, 2817595786, 4226393679], dtype=np.uint32),
+        ]
+    )
+    actual = strings.str.minhash(width=2, seed=0, a=params, b=params)
+    assert_eq(expected, actual)
+
+    params = cudf.Series([1, 2, 3], dtype=np.uint64)
+    expected = cudf.Series(
+        [
+            cudf.Series(
+                [652146669912597278, 1304293339825194556, 1956440009737791826],
+                dtype=np.uint64,
+            ),
+            cudf.Series(
+                [1776622609581023632, 1247402209948353305, 718181810315682986],
+                dtype=np.uint64,
+            ),
+        ]
+    )
+    actual = strings.str.minhash(width=2, seed=0, a=params, b=params)
+    assert_eq(expected, actual)
+
+    # test wrong input types
     with pytest.raises(ValueError):
-        params = cudf.Series([0, 1, 2], dtype=np.uint32)
-        strings.str.minhash64(1, a=params, b=params, width=8)
+        strings.str.minhash(width=7, seed=1, a="a", b="b")
+    with pytest.raises(ValueError):
+        params = cudf.Series([0, 1, 2], dtype=np.int32)
+        strings.str.minhash(width=6, seed=1, a=params, b=params)
 
 
 def test_jaccard_index():
@@ -1038,4 +1078,43 @@ def test_byte_pair_encoding(separator, input, results):
 
     actual = encoder(strings, separator)
     assert type(expected) is type(actual)
+    assert_eq(expected, actual)
+
+
+@pytest.fixture
+def duplicate_input():
+    return [
+        " 01234567890123456789 magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation    ",
+        "laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit   ",
+        "voluptate velit esse cillum dolore eu fugiat nulla pariatur. 01234567890123456789         ",
+        "deleniti earum? Qui ipsam ipsum hic ratione mollitia aut nobis laboriosam. Eum aspernatur ",
+        "dolorem sit voluptatum numquam in iure placeat vel laudantium molestiae? Ad reprehenderit ",
+        "quia aut minima deleniti id consequatur sapiente est dolores cupiditate. 012345678901234  ",
+    ]
+
+
+def test_resolve_duplicates(duplicate_input):
+    text = duplicate_input
+    input = cudf.Series(text)
+    sa = input.str.build_suffix_array(0)
+    actual = input.str.resolve_duplicates(sa, 15)
+    expected = cudf.Series(
+        [" 01234567890123456789 ", ". 012345678901234", " reprehenderit "]
+    )
+    assert_eq(expected, actual)
+
+
+def test_resolve_duplicates_pair(duplicate_input):
+    text = duplicate_input
+    text1 = text[0:3]
+    text2 = text[3:]
+
+    input1 = cudf.Series(text1)
+    sa1 = input1.str.build_suffix_array(0)
+    input2 = cudf.Series(text2)
+    sa2 = input2.str.build_suffix_array(0)
+    actual = input1.str.resolve_duplicates_pair(sa1, input2, sa2, 15)
+    expected = cudf.Series(
+        [". 012345678901234", " 012345678901234", " reprehenderit "]
+    )
     assert_eq(expected, actual)
