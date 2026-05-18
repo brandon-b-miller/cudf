@@ -21,6 +21,17 @@ from __future__ import annotations
 import operator
 
 import numpy as np
+from numba_cuda_mlir import types
+from numba_cuda_mlir._mlir import ir as mlir_ir
+from numba_cuda_mlir._mlir.dialects import (
+    arith,
+    func,
+    linalg,
+    llvm,
+    scf,
+    tensor,
+)
+from numba_cuda_mlir._mlir.extras import types as T
 from numba_cuda_mlir.extending import lower_cast, lowering_registry
 from numba_cuda_mlir.lowering_utilities import (
     DeferredMethodCall,
@@ -34,12 +45,8 @@ from numba_cuda_mlir.lowering_utilities import (
     int_of,
     try_extract_constant,
 )
-from numba_cuda_mlir._mlir import ir as mlir_ir
-from numba_cuda_mlir._mlir.dialects import arith, func, linalg, llvm, scf, tensor
-from numba_cuda_mlir._mlir.extras import types as T
-from numba_cuda_mlir import types
-from numba_cuda_mlir.numba_cuda.core import ir as numba_ir
 from numba_cuda_mlir.numba_cuda import typing as nb_typing
+from numba_cuda_mlir.numba_cuda.core import ir as numba_ir
 from numba_cuda_mlir.numba_cuda.types.misc import unliteral
 
 from cudf.core.udf._ops import (
@@ -223,7 +230,6 @@ def _register():
     # --- Lowering: getattr .value / .valid ---
     @lower_getattr_generic(MaskedType)
     def lower_masked_getattr(context, builder, target, value, attr):
-        value_type = builder.get_numba_type(value.name)
         struct_value = builder.load_var(value)
         if attr == "value":
             field_index = 0
@@ -459,7 +465,6 @@ def _register():
     # --- Binary with NA: result is invalid ---
     def _lower_masked_binary_null(builder, target, args, kwargs):
         target_type = builder.get_numba_type(target.name)
-        struct_ty = builder.get_mlir_type(target_type)
         value_mlir_ty = builder.get_mlir_type(target_type.value_type)
         undef_val = llvm.UndefOp(value_mlir_ty)
         valid_zero = arith.constant(
@@ -560,7 +565,6 @@ def _register():
 
     def _lower_pack_return_scalar(builder, target, args, kwargs):
         target_type = builder.get_numba_type(target.name)
-        mlir_struct_ty = builder.get_mlir_type(target_type)
         value_mlir_ty = builder.get_mlir_type(target_type.value_type)
         scalar_val = convert(builder.load_var(args[0]), value_mlir_ty)
         valid_one = arith.constant(
@@ -1168,7 +1172,9 @@ def _register():
                 inputs=[ptr_ty, ptr_ty, ptr_ty, i64, i64, i64],
                 results=[i32],
             )
-            from numba_cuda_mlir.lowering_utilities import get_or_insert_function
+            from numba_cuda_mlir.lowering_utilities import (
+                get_or_insert_function,
+            )
 
             callee = get_or_insert_function(
                 shim_name, func_ty, builder.mlir_gpu_module

@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import operator
 
+from numba_cuda_mlir import types
+from numba_cuda_mlir._mlir import ir as mlir_ir
+from numba_cuda_mlir._mlir.dialects import arith, func, llvm
 from numba_cuda_mlir.extending import lower_cast, lowering_registry
 from numba_cuda_mlir.lowering_utilities import (
     DeferredMethodCall,
     get_or_insert_function,
 )
-from numba_cuda_mlir._mlir import ir as mlir_ir
-from numba_cuda_mlir._mlir.dialects import arith, func, llvm
-from numba_cuda_mlir import types
 
 from cudf._lib.strings_udf import (
     get_character_cases_table_ptr,
@@ -300,7 +300,7 @@ def _call_shim_returning_managed(builder, shim_name, input_ptrs):
     func.call(
         result=[i32],
         callee=callee.name.value,
-        operands_=[nb_retval_ptr, udf_str_ptr] + list(input_ptrs),
+        operands_=[nb_retval_ptr, udf_str_ptr, *list(input_ptrs)],
     )
 
     # Load meminfo from the retval slot
@@ -655,9 +655,13 @@ def _register():
 
     def _make_lower_managed_binary_str_str_int(shim_n):
         def _lower_impl(builder, target, args, kwargs):
-            lhs_ptr = _sv_val_to_ptr(builder, _managed_sv_from_var(builder, args[0]))
+            lhs_ptr = _sv_val_to_ptr(
+                builder, _managed_sv_from_var(builder, args[0])
+            )
             rhs_ptr = _sv_var_to_ptr(builder, args[1])
-            result = call_string_int_str_str_shim(builder, lhs_ptr, rhs_ptr, shim_n)
+            result = call_string_int_str_str_shim(
+                builder, lhs_ptr, rhs_ptr, shim_n
+            )
             builder.store_var(target, result)
 
         def _getattr(context, builder, target, value, attr=None):
@@ -672,9 +676,13 @@ def _register():
 
     def _make_lower_managed_binary_str_str_bool(shim_n):
         def _lower_impl(builder, target, args, kwargs):
-            lhs_ptr = _sv_val_to_ptr(builder, _managed_sv_from_var(builder, args[0]))
+            lhs_ptr = _sv_val_to_ptr(
+                builder, _managed_sv_from_var(builder, args[0])
+            )
             rhs_ptr = _sv_var_to_ptr(builder, args[1])
-            result = call_string_bool_str_str_shim(builder, lhs_ptr, rhs_ptr, shim_n)
+            result = call_string_bool_str_str_shim(
+                builder, lhs_ptr, rhs_ptr, shim_n
+            )
             builder.store_var(target, result)
 
         def _getattr(context, builder, target, value, attr=None):
@@ -688,7 +696,9 @@ def _register():
         )
 
     def _lower_managed_replace_impl(builder, target, args, kwargs):
-        src_ptr = _sv_val_to_ptr(builder, _managed_sv_from_var(builder, args[0]))
+        src_ptr = _sv_val_to_ptr(
+            builder, _managed_sv_from_var(builder, args[0])
+        )
         old_ptr = _sv_var_to_ptr(builder, args[1])
         new_ptr = _sv_var_to_ptr(builder, args[2])
         result = _call_shim_returning_managed(
@@ -696,12 +706,16 @@ def _register():
         )
         builder.store_var(target, result)
 
-    def _lower_managed_replace_getattr(context, builder, target, value, attr=None):
+    def _lower_managed_replace_getattr(
+        context, builder, target, value, attr=None
+    ):
         builder.store_var(
             target, DeferredMethodCall(value, _lower_managed_replace_impl)
         )
 
-    lower_getattr(managed_udf_string, "replace")(_lower_managed_replace_getattr)
+    lower_getattr(managed_udf_string, "replace")(
+        _lower_managed_replace_getattr
+    )
 
     def _make_lower_managed_upper_or_lower(shim_name):
         def _lower_impl(builder, target, args, kwargs):
@@ -712,9 +726,15 @@ def _register():
             i32 = mlir_ir.IntegerType.get_signless(32)
             managed_ty = builder.get_mlir_type(managed_udf_string)
 
-            flags_const = _i64_const_from_ptr(int(get_character_flags_table_ptr()))
-            cases_const = _i64_const_from_ptr(int(get_character_cases_table_ptr()))
-            special_const = _i64_const_from_ptr(int(get_special_case_mapping_table_ptr()))
+            flags_const = _i64_const_from_ptr(
+                int(get_character_flags_table_ptr())
+            )
+            cases_const = _i64_const_from_ptr(
+                int(get_character_cases_table_ptr())
+            )
+            special_const = _i64_const_from_ptr(
+                int(get_special_case_mapping_table_ptr())
+            )
 
             managed_ptr = builder.alloca(managed_ty)
             udf_str_ptr = llvm.getelementptr(
@@ -733,8 +753,12 @@ def _register():
                 result=[i32],
                 callee=callee.name.value,
                 operands_=[
-                    nb_retval_ptr, udf_str_ptr, sv_ptr,
-                    flags_const, cases_const, special_const,
+                    nb_retval_ptr,
+                    udf_str_ptr,
+                    sv_ptr,
+                    flags_const,
+                    cases_const,
+                    special_const,
                 ],
             )
 
@@ -761,7 +785,9 @@ def _register():
 
     def _make_lower_managed_strip(shim_name):
         def _lower_impl(builder, target, args, kwargs):
-            src_ptr = _sv_val_to_ptr(builder, _managed_sv_from_var(builder, args[0]))
+            src_ptr = _sv_val_to_ptr(
+                builder, _managed_sv_from_var(builder, args[0])
+            )
             chars_ptr = _sv_var_to_ptr(builder, args[1])
             result = _call_shim_returning_managed(
                 builder, shim_name, [src_ptr, chars_ptr]
@@ -773,16 +799,22 @@ def _register():
 
         return _getattr
 
-    lower_getattr(managed_udf_string, "strip")(_make_lower_managed_strip("strip"))
-    lower_getattr(managed_udf_string, "lstrip")(_make_lower_managed_strip("lstrip"))
-    lower_getattr(managed_udf_string, "rstrip")(_make_lower_managed_strip("rstrip"))
+    lower_getattr(managed_udf_string, "strip")(
+        _make_lower_managed_strip("strip")
+    )
+    lower_getattr(managed_udf_string, "lstrip")(
+        _make_lower_managed_strip("lstrip")
+    )
+    lower_getattr(managed_udf_string, "rstrip")(
+        _make_lower_managed_strip("rstrip")
+    )
 
     # --- setitem: CPointer(managed_udf_string)[int] = managed_udf_string ---
     # Stores the struct into the output array AND increfs the meminfo,
     # because storing creates a new reference.
     def _lower_setitem_cpointer_managed(builder, target, args, kwargs):
-        from numba_cuda_mlir.lowering_utilities import convert
         from numba_cuda_mlir._mlir.extras import types as T
+        from numba_cuda_mlir.lowering_utilities import convert
 
         ptr, idx, val = [builder.load_var(a) for a in args]
         managed_ty = builder.get_mlir_type(managed_udf_string)

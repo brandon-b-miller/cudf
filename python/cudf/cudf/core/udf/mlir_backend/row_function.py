@@ -4,17 +4,17 @@ import math
 from functools import cache
 
 import numpy as np
-from numba_cuda_mlir.extending import lowering_registry, typing_registry
 from numba_cuda_mlir import cuda, types
-from numba_cuda_mlir.typing import signature as nb_signature
-from numba_cuda_mlir.numba_cuda.typing.templates import AbstractTemplate
+from numba_cuda_mlir.extending import lowering_registry, typing_registry
 from numba_cuda_mlir.numba_cuda.np import numpy_support
+from numba_cuda_mlir.numba_cuda.typing.templates import AbstractTemplate
+from numba_cuda_mlir.typing import signature as nb_signature
 
 from cudf.core.udf.api import Masked, pack_return
 from cudf.core.udf.mlir_backend.masked_typing import MaskedType
 from cudf.core.udf.mlir_backend.strings_typing import string_view
-from cudf.core.udf.mlir_backend.udf_kernel_base import ApplyKernelBase
 from cudf.core.udf.mlir_backend.templates import row_kernel_template
+from cudf.core.udf.mlir_backend.udf_kernel_base import ApplyKernelBase
 from cudf.core.udf.templates import (
     masked_input_initializer_template,
     row_initializer_template,
@@ -33,7 +33,7 @@ def _row_slot():
     raise NotImplementedError("_row_slot is only for JIT")
 
 
-_row_slot_cases = []
+_row_slot_cases: list[tuple] = []
 
 
 class RowSlotTemplate(AbstractTemplate):
@@ -154,7 +154,6 @@ class DataFrameApplyKernel(ApplyKernelBase):
         )
 
     def _get_kernel_string(self):
-        row_type = self._get_frame_type()
         frame = _supported_cols_from_frame(self.frame)
 
         input_columns = ", ".join(
@@ -175,9 +174,7 @@ class DataFrameApplyKernel(ApplyKernelBase):
                 else unmasked_input_initializer_template
             )
             initializers.append(template.format(idx=idx))
-            row_initializers.append(
-                row_initializer_template.format(idx=idx)
-            )
+            row_initializers.append(row_initializer_template.format(idx=idx))
 
         return row_kernel_template.format(
             input_columns=input_columns,

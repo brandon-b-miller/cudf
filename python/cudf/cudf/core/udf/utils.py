@@ -15,11 +15,11 @@ import numpy as np
 from cuda.bindings import runtime
 from numba_cuda_mlir import cuda, models
 from numba_cuda_mlir.models import register_model
-from numba_cuda_mlir.types import CPointer, Record, Tuple, int64, void
-from numba_cuda_mlir.numba_cuda.typing.typeof import typeof
 from numba_cuda_mlir.numba_cuda import types as nb_types
 from numba_cuda_mlir.numba_cuda.descriptor import cuda_target
 from numba_cuda_mlir.numba_cuda.np import numpy_support
+from numba_cuda_mlir.numba_cuda.typing.typeof import typeof
+from numba_cuda_mlir.types import CPointer, Record, Tuple, int64, void
 
 import rmm
 
@@ -167,7 +167,9 @@ register_model(Row)(models.RecordModel)
 # Also register with numba's native model system for the numba-cuda backend.
 try:
     from numba_cuda_mlir.numba_cuda.datamodel import models as numba_models
-    from numba_cuda_mlir.numba_cuda.extending import register_model as numba_register_model
+    from numba_cuda_mlir.numba_cuda.extending import (
+        register_model as numba_register_model,
+    )
 
     numba_register_model(Row)(numba_models.RecordModel)
 except (ImportError, AttributeError):
@@ -290,7 +292,7 @@ def _buffer_as_dtyped_view(data: "Buffer", n: int, dtype: np.dtype):
 
 
 def _get_input_args_from_frame(fr: IndexedFrame) -> list:
-    args: list[Buffer | tuple[Buffer, Buffer]] = []
+    args: list = []
     offsets = []
     for col in _supported_cols_from_frame(fr).values():
         if col.dtype == CUDF_STRING_DTYPE:

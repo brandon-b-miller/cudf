@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import operator
 
-from numba_cuda_mlir import models
+from numba_cuda_mlir import models, types
+from numba_cuda_mlir._mlir.dialects import llvm
 from numba_cuda_mlir.extending import typing_registry
 from numba_cuda_mlir.models import PrimitiveModel, register_model
-from numba_cuda_mlir.typing import signature as nb_signature
-from numba_cuda_mlir._mlir.dialects import llvm
-from numba_cuda_mlir import types
 from numba_cuda_mlir.numba_cuda.extending import typeof_impl
 from numba_cuda_mlir.numba_cuda.types.misc import unliteral
 from numba_cuda_mlir.numba_cuda.typing.templates import (
@@ -25,6 +23,7 @@ from numba_cuda_mlir.numba_cuda.typing.templates import (
     AttributeTemplate,
     ConcreteTemplate,
 )
+from numba_cuda_mlir.typing import signature as nb_signature
 
 from cudf.core.missing import NA
 from cudf.core.udf._ops import (

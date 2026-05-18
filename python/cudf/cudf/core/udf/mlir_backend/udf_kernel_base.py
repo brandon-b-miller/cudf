@@ -5,9 +5,9 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 from numba_cuda_mlir import cuda, types
-from numba_cuda_mlir.numba_cuda.typing.typeof import typeof
 from numba_cuda_mlir.numba_cuda.core.errors import TypingError
 from numba_cuda_mlir.numba_cuda.np import numpy_support
+from numba_cuda_mlir.numba_cuda.typing.typeof import typeof
 from numba_cuda_mlir.types import CPointer, Poison, Tuple, boolean, int64, void
 
 from cudf.api.types import is_scalar

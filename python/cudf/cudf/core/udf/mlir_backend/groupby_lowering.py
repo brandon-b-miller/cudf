@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION.
 # SPDX-License-Identifier: Apache-2.0
 
-from numba_cuda_mlir.extending import lowering_registry
-from numba_cuda_mlir.lowering_utilities import DeferredMethodCall, convert
+from numba_cuda_mlir import types
 from numba_cuda_mlir._mlir import ir as mlir_ir
 from numba_cuda_mlir._mlir.dialects import arith, llvm, memref
 from numba_cuda_mlir._mlir.extras import types as T
-from numba_cuda_mlir import types
+from numba_cuda_mlir.extending import lowering_registry
+from numba_cuda_mlir.lowering_utilities import DeferredMethodCall, convert
 from numba_cuda_mlir.numba_cuda.core import ir as numba_ir
 
 from cudf.core.udf.mlir_backend.groupby_typing import (

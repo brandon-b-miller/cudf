@@ -7,8 +7,10 @@ from functools import cache
 import cupy as cp
 import numpy as np
 from numba_cuda_mlir import cuda, types
-from numba_cuda_mlir.numba_cuda.core.errors import TypingError as CoreTypingError
-from numba_cuda_mlir.numba_cuda.core.errors import TypingError as CudaTypingError
+from numba_cuda_mlir.numba_cuda.core.errors import (
+    TypingError as CoreTypingError,
+    TypingError as CudaTypingError,
+)
 from numba_cuda_mlir.numba_cuda.np import numpy_support
 
 from cudf.core.column import as_column, column_empty
@@ -23,8 +25,8 @@ from cudf.core.udf.mlir_backend.groupby_typing import (
     _group_slot,
     register_group_slot,
 )
-from cudf.core.udf.mlir_backend.udf_kernel_base import ApplyKernelBase
 from cudf.core.udf.mlir_backend.templates import groupby_apply_kernel_template
+from cudf.core.udf.mlir_backend.udf_kernel_base import ApplyKernelBase
 from cudf.core.udf.templates import group_initializer_template
 from cudf.core.udf.utils import (
     UDFError,

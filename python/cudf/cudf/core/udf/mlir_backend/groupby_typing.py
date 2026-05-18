@@ -9,13 +9,16 @@ and _group_slot. Importing this module registers typing with numba_cuda_mlir.
 from __future__ import annotations
 
 from numba_cuda_mlir import cuda as numba_cuda_mlir_cuda, models, types
+from numba_cuda_mlir._mlir.dialects import llvm
 from numba_cuda_mlir.extending import typing_registry
 from numba_cuda_mlir.models import PrimitiveModel, register_model
-from numba_cuda_mlir.typing import signature as nb_signature
-from numba_cuda_mlir._mlir.dialects import llvm
 from numba_cuda_mlir.numba_cuda.core.errors import TypingError
-from numba_cuda_mlir.numba_cuda.typing.templates import AbstractTemplate, AttributeTemplate
 from numba_cuda_mlir.numba_cuda.np import numpy_support
+from numba_cuda_mlir.numba_cuda.typing.templates import (
+    AbstractTemplate,
+    AttributeTemplate,
+)
+from numba_cuda_mlir.typing import signature as nb_signature
 
 from cudf.core.udf._ops import arith_ops, comparison_ops, unary_ops
 from cudf.core.udf.utils import Row, UDFError

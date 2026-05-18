@@ -6,11 +6,11 @@ import operator
 
 import numpy as np
 import pytest
-from numba_cuda_mlir import cuda
 from numba.core.typing import signature as nb_signature
 from numba.core.typing.templates import AbstractTemplate
 from numba.cuda.cudadecl import registry as cuda_decl_registry
 from numba.cuda.cudaimpl import lower as cuda_lower
+from numba_cuda_mlir import cuda
 
 import cudf
 from cudf.core.missing import NA

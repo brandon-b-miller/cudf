@@ -6,15 +6,18 @@ from __future__ import annotations
 import operator
 
 import numpy as np
-from numba_cuda_mlir.extending import typing_registry
-from numba_cuda_mlir.models import register_model
+from numba_cuda_mlir import types
 from numba_cuda_mlir._mlir import ir as mlir_ir
 from numba_cuda_mlir._mlir.dialects import llvm
-from numba_cuda_mlir import types
+from numba_cuda_mlir.extending import typing_registry
+from numba_cuda_mlir.models import register_model
 from numba_cuda_mlir.numba_cuda.datamodel import PrimitiveModel
 from numba_cuda_mlir.numba_cuda.extending import typeof_impl
+from numba_cuda_mlir.numba_cuda.typing.templates import (
+    AbstractTemplate,
+    AttributeTemplate,
+)
 from numba_cuda_mlir.typing import signature as nb_signature
-from numba_cuda_mlir.numba_cuda.typing.templates import AbstractTemplate, AttributeTemplate
 
 # libcudf size_type
 size_type = types.int32
