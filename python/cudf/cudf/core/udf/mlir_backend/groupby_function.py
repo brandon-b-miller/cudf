@@ -6,24 +6,26 @@ from functools import cache
 
 import cupy as cp
 import numpy as np
-from numba import cuda, types
-from numba.core.errors import TypingError as CoreTypingError
-from numba.cuda.core.errors import TypingError as CudaTypingError
-from numba.cuda.cudadrv.devices import get_context
-from numba.np import numpy_support
+from numba_cuda_mlir import cuda, types
+from numba_cuda_mlir.numba_cuda.core.errors import TypingError as CoreTypingError
+from numba_cuda_mlir.numba_cuda.core.errors import TypingError as CudaTypingError
+from numba_cuda_mlir.numba_cuda.np import numpy_support
 
 from cudf.core.column import as_column, column_empty
-from cudf.core.udf.groupby_typing import (
+from cudf.core.udf.mlir_backend.groupby_lowering import (
+    register_group_slot_lowering,
+)
+from cudf.core.udf.mlir_backend.groupby_typing import (
     SUPPORTED_GROUPBY_NUMPY_TYPES,
     Group,
     GroupByJITDataFrame,
     GroupType,
+    _group_slot,
+    register_group_slot,
 )
-from cudf.core.udf.templates import (
-    group_initializer_template,
-    groupby_apply_kernel_template,
-)
-from cudf.core.udf.udf_kernel_base import ApplyKernelBase
+from cudf.core.udf.mlir_backend.udf_kernel_base import ApplyKernelBase
+from cudf.core.udf.mlir_backend.templates import groupby_apply_kernel_template
+from cudf.core.udf.templates import group_initializer_template
 from cudf.core.udf.utils import (
     UDFError,
     _all_dtypes_from_frame,
@@ -128,17 +130,10 @@ def jit_groupby_apply(offsets, grouped_values, function, *args):
     else:
         specialized = kernel.specialize(*launch_args)
 
-    # Ask the driver to give a good config
-    ctx = get_context()
-    # Dispatcher is specialized, so there's only one definition - get
-    # it so we can get the cufunc from the code library
+    # Block size (tpb) from kernel attributes; grid is ngroups (numba_cuda_mlir kernels).
     (kern_def,) = specialized.overloads.values()
-    grid, tpb = ctx.get_max_potential_block_size(
-        func=kern_def._codelibrary.get_cufunc(),
-        b2d_func=0,
-        memsize=0,
-        blocksizelimit=int(blocklim),
-    )
+    attrs = kern_def._codelibrary.get_kernel_attributes()
+    tpb = min(int(blocklim), attrs["max_threads_per_block"])
 
     # Launch kernel
     with _CUDFNumbaConfig():
@@ -211,6 +206,8 @@ class GroupByApplyKernel(ApplyKernelBase):
     @cache
     def _get_kernel_string_exec_context(self):
         dataframe_group_type = self._get_frame_type()
+        register_group_slot(dataframe_group_type)
+        register_group_slot_lowering(dataframe_group_type)
         col_names = tuple(
             _supported_cols_from_frame(
                 self.frame, supported_types=SUPPORTED_GROUPBY_NUMPY_TYPES
@@ -221,6 +218,7 @@ class GroupByApplyKernel(ApplyKernelBase):
             "Group": Group,
             "dataframe_group_type": dataframe_group_type,
             "types": types,
+            "_group_slot": _group_slot,
             "_col_names": col_names,
         }
         return global_exec_context

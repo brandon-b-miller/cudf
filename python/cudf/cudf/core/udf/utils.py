@@ -13,21 +13,26 @@ import cupy as cp
 import llvmlite.binding as ll
 import numpy as np
 from cuda.bindings import runtime
-from numba import cuda, typeof
-from numba.core.datamodel import models
-from numba.core.extending import register_model
-from numba.cuda.descriptor import cuda_target
-from numba.np import numpy_support
-from numba.types import CPointer, Record, Tuple, int64, void
+from numba_cuda_mlir import cuda, models
+from numba_cuda_mlir.models import register_model
+from numba_cuda_mlir.types import CPointer, Record, Tuple, int64, void
+from numba_cuda_mlir.numba_cuda.typing.typeof import typeof
+from numba_cuda_mlir.numba_cuda import types as nb_types
+from numba_cuda_mlir.numba_cuda.descriptor import cuda_target
+from numba_cuda_mlir.numba_cuda.np import numpy_support
 
 import rmm
 
 from cudf._lib import strings_udf
 from cudf.core.buffer import as_buffer
-from cudf.core.udf.masked_typing import MaskedType
 from cudf.core.udf.nrt_utils import nrt_enabled
 from cudf.core.udf.strings_typing import (
+    ManagedStrArrayWrapper,
+    ManagedUDFString,
     NRT_decref,
+    StringView,
+    StrViewArrayWrapper,
+    UDFString,
     managed_udf_string,
     str_view_arg_handler,
     string_view,
@@ -50,6 +55,26 @@ if TYPE_CHECKING:
     from cudf.core.buffer.buffer import Buffer
     from cudf.core.indexed_frame import IndexedFrame
 
+
+SUPPORTED_MASKED_TYPES = (
+    nb_types.Number,
+    nb_types.Boolean,
+    nb_types.NPDatetime,
+    nb_types.NPTimedelta,
+    StringView,
+    UDFString,
+    ManagedUDFString,
+)
+
+_units = ("ns", "us", "ms", "s")
+_supported_masked_types = (
+    nb_types.integer_domain
+    | nb_types.real_domain
+    | {nb_types.NPDatetime(u) for u in _units}
+    | {nb_types.NPTimedelta(u) for u in _units}
+    | {nb_types.boolean}
+    | {string_view, managed_udf_string}
+)
 
 # Maximum size of a string column is 2 GiB
 _STRINGS_UDF_DEFAULT_HEAP_SIZE = os.environ.get("STRINGS_UDF_HEAP_SIZE", 2**31)
@@ -106,12 +131,9 @@ def _supported_cols_from_frame(frame, supported_types=JIT_SUPPORTED_TYPES):
 
 def _masked_array_type_from_col(col):
     """
-    Return a type representing a tuple of arrays,
-    the first element an array of the numba type
-    corresponding to `dtype`, and the second an
-    array of bools representing a mask.
+    Return kernel arg type per column: Array for unmasked, Tuple(data, mask) for masked.
+    Matches original numba extension: unmasked -> single array, masked -> unpacked (d, m).
     """
-
     if col.dtype == CUDF_STRING_DTYPE:
         col_type = CPointer(string_view)
     else:
@@ -120,8 +142,7 @@ def _masked_array_type_from_col(col):
 
     if col.mask is None:
         return col_type
-    else:
-        return Tuple((col_type, LIBCUDF_BITMASK_TYPE[::1]))
+    return Tuple((col_type, LIBCUDF_BITMASK_TYPE[::1]))
 
 
 class Row(Record):
@@ -143,11 +164,23 @@ class Row(Record):
 
 register_model(Row)(models.RecordModel)
 
+# Also register with numba's native model system for the numba-cuda backend.
+try:
+    from numba_cuda_mlir.numba_cuda.datamodel import models as numba_models
+    from numba_cuda_mlir.numba_cuda.extending import register_model as numba_register_model
 
-@cuda.jit(device=True)
-def _mask_get(mask, pos):
-    """Return the validity of mask[pos] as a word."""
-    return (mask[pos // MASK_BITSIZE] >> (pos % MASK_BITSIZE)) & 1
+    numba_register_model(Row)(numba_models.RecordModel)
+except (ImportError, AttributeError):
+    pass
+
+
+def _mask_get_impl(mask, pos):
+    """Return the validity of mask[pos] as a bool (raw impl for JIT)."""
+    return bool((mask[pos // MASK_BITSIZE] >> (pos % MASK_BITSIZE)) & 1)
+
+
+# numba_cuda_mlir-jitted device function for kernel exec context
+_mask_get = cuda.jit(device=True)(_mask_get_impl)
 
 
 def make_cache_key(udf, sig):
@@ -208,6 +241,8 @@ def compile_udf(udf, type_signature):
     ptx_code, return_type = cuda.compile_ptx_for_current_device(
         udf, type_signature, device=True
     )
+    from cudf.core.udf.masked_typing import MaskedType
+
     if not isinstance(return_type, MaskedType):
         output_type = numpy_support.as_dtype(return_type).type
     else:
@@ -238,23 +273,60 @@ def _generate_cache_key(frame, func: Callable, args, suffix="__APPLY_UDF"):
     )
 
 
+def _buffer_as_dtyped_view(data: "Buffer", n: int, dtype: np.dtype):
+    """View a Buffer as a cupy array with shape (n,) and dtype so the kernel indexes by element.
+
+    Buffer's cuda_array_interface uses shape=(size,) and typestr='|u1' (bytes), so passing it
+    directly makes d_0[i] load the i-th byte instead of the i-th element. This view gives the
+    kernel the correct dtype and shape so d_0[i + offset] is the (i+offset)-th element.
+    """
+    with data.access(mode="read"):
+        ptr = data.ptr
+    size_bytes = data.size
+    memptr = cp.cuda.MemoryPointer(
+        cp.cuda.UnownedMemory(ptr, size_bytes, None), 0
+    )
+    return cp.ndarray((n,), dtype=dtype, memptr=memptr)
+
+
 def _get_input_args_from_frame(fr: IndexedFrame) -> list:
     args: list[Buffer | tuple[Buffer, Buffer]] = []
     offsets = []
     for col in _supported_cols_from_frame(fr).values():
         if col.dtype == CUDF_STRING_DTYPE:
-            data = column_to_string_view_array_init_heap(col.plc_column)
+            data = StrViewArrayWrapper(
+                column_to_string_view_array_init_heap(col.plc_column)
+            )
         else:
-            data = col.data
+            # View buffer with column dtype/shape so kernel sees d_0[i] as i-th element, not i-th byte
+            data = _buffer_as_dtyped_view(col.data, len(col), col.dtype)
         if col.mask is not None:
-            # argument is a tuple of data, mask
-            args.append((data, col.mask))
+            # View mask buffer with LIBCUDF_BITMASK_TYPE so kernel gets expected dtype/shape
+            mask_itemsize = np.dtype(SIZE_TYPE_DTYPE).itemsize
+            mask_n = col.mask.size // mask_itemsize
+            mask_view = _buffer_as_dtyped_view(
+                col.mask, mask_n, SIZE_TYPE_DTYPE
+            )
+            args.append((data, mask_view))
         else:
-            # argument is just the data pointer
             args.append(data)
         offsets.append(col.offset)
 
     return args + offsets
+
+
+def _output_args_for_udf_kernel(ans_col, ans_mask, n):
+    """Build output_args for kernel launch. Mask as writable array for numba_cuda_mlir kernel."""
+    with ans_mask.data.access(mode="write"):
+        ptr = ans_mask.data.ptr
+    ans_mask_arr = cp.ndarray(
+        (n,),
+        dtype=np.bool_,
+        memptr=cp.cuda.MemoryPointer(cp.cuda.UnownedMemory(ptr, n, None), 0),
+    )
+    if isinstance(ans_col, rmm.DeviceBuffer):
+        ans_col = ManagedStrArrayWrapper(ans_col)
+    return [(ans_col, ans_mask_arr), n]
 
 
 def _return_arr_from_dtype(dtype, size):
@@ -306,8 +378,14 @@ _nvvm_data_layout = (
 
 def _get_extensionty_size(ty):
     """
-    Return the size of an extension type in bytes
+    Return the size of an extension type in bytes.
+    MLIR-path types (StringView, GroupType, ManagedUDFString) define
+    _extensionty_size and are handled here without using the Numba/CUDA
+    data model.
     """
+    size = getattr(type(ty), "_extensionty_size", None)
+    if size is not None:
+        return size
     target_data = ll.create_target_data(_nvvm_data_layout)
     llty = cuda_target.target_context.data_model_manager[ty].get_value_type()
     return llty.get_abi_size(target_data)

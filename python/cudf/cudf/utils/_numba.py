@@ -1,10 +1,12 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION.
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import numba
 from numba.cuda import config as numba_config
 from packaging import version
+
+numba_config.CUDA_ENABLE_NRT = False
 
 
 # Avoids using contextlib.contextmanager due to additional overhead

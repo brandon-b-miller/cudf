@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2018-2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2018-2026, NVIDIA CORPORATION.
 # SPDX-License-Identifier: Apache-2.0
 
 import textwrap
@@ -16,7 +16,9 @@ from cudf.core._compat import (
     PANDAS_VERSION,
 )
 from cudf.core.udf._ops import arith_ops, comparison_ops, unary_ops
-from cudf.core.udf.groupby_typing import SUPPORTED_GROUPBY_NUMPY_TYPES
+from cudf.core.udf.mlir_backend.groupby_typing import (
+    SUPPORTED_GROUPBY_NUMPY_TYPES,
+)
 from cudf.core.udf.utils import UDFError, precompiled
 from cudf.testing import assert_eq, assert_groupby_results_equal
 from cudf.testing._utils import expect_warning_if
