@@ -6,6 +6,7 @@ from functools import cache
 from numba_cuda_mlir import cuda
 from numba_cuda_mlir.numba_cuda.np import numpy_support
 
+from cudf.core.dtype.validators import is_dtype_obj_string
 from cudf.core.udf.api import Masked, pack_return
 from cudf.core.udf.mlir_backend.masked_typing import MaskedType
 from cudf.core.udf.mlir_backend.strings_typing import string_view
@@ -18,7 +19,6 @@ from cudf.core.udf.templates import (
 from cudf.core.udf.utils import (
     _mask_get,
 )
-from cudf.utils.dtypes import CUDF_STRING_DTYPE
 
 
 class SeriesApplyKernel(ApplyKernelBase):
@@ -37,7 +37,7 @@ class SeriesApplyKernel(ApplyKernelBase):
         return "series_apply"
 
     def _get_frame_type(self):
-        if self.frame.dtype == CUDF_STRING_DTYPE:
+        if is_dtype_obj_string(self.frame.dtype):
             return MaskedType(string_view)
         return MaskedType(numpy_support.from_dtype(self.frame.dtype))
 
