@@ -443,7 +443,35 @@ def _register():
 
     lower(NRT_decref, managed_udf_string)(_lower_nrt_decref)
 
-    # String cmpops (all signatures) are registered in mlir_masked_lowering with one unified impl.
+    # --- String cmpops (eq, ne, lt, le, gt, ge) -> boolean ---
+    # Bare string_view <op> string_view (and StringLiteral variants).
+    # Masked(sv) <op> Masked(sv), Masked(sv) <op> sv, sv <op> Masked(sv) are
+    # registered alongside the Masked typing/lowering and reach back through
+    # `call_string_cmpop_shim` for the shim call.
+    _cmpops = (
+        operator.eq,
+        operator.ne,
+        operator.lt,
+        operator.le,
+        operator.gt,
+        operator.ge,
+    )
+
+    def _make_lower_cmpop(shim_name):
+        def _lower_impl(builder, target, args, kwargs):
+            lhs_ptr, rhs_ptr = _get_lhs_rhs_sv_ptrs(builder, args[0], args[1])
+            result = call_string_cmpop_shim(
+                builder, lhs_ptr, rhs_ptr, shim_name
+            )
+            builder.store_var(target, result)
+
+        return _lower_impl
+
+    for op, shim_name in zip(_cmpops, _CMPOP_SHIMS):
+        impl = _make_lower_cmpop(shim_name)
+        lower(op, string_view, string_view)(impl)
+        lower(op, string_view, types.StringLiteral)(impl)
+        lower(op, types.StringLiteral, string_view)(impl)
 
     # --- Cast: Literal -> string_view ---
     @lower_cast(types.StringLiteral, string_view)

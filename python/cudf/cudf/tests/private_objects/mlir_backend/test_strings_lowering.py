@@ -64,11 +64,20 @@ SV_PTR = CPointer(string_view)
 
 
 def _str_view_array(strings) -> StrViewArrayWrapper:
-    """Return a ``StrViewArrayWrapper`` over the device string-view array."""
+    """Return a ``StrViewArrayWrapper`` over the device string-view array.
+
+    Note: the returned ``string_view`` structs hold raw pointers into the
+    underlying ``cudf.Series`` data. We attach the source Series to the
+    wrapper as ``_owner`` so it isn't GC'd until the wrapper is - otherwise
+    the kernel reads dangling pointers and the failures look like spooky
+    cross-input pollution.
+    """
     sr = cudf.Series(strings)
-    return StrViewArrayWrapper(
+    wrapper = StrViewArrayWrapper(
         as_buffer(strings_udf.column_to_string_view_array(sr._column.plc_column))
     )
+    wrapper._owner = sr
+    return wrapper
 
 
 def _jit(sig, *, nrt=False):
@@ -361,12 +370,6 @@ def test_cmp_gt(lhs, rhs):
     assert bool(out.get()[0]) == (lhs > rhs)
 
 
-@pytest.mark.xfail(
-    reason="ICE in numba_cuda_mlir lowering for string_view >= string_view; "
-    "tracking under TODO.",
-    raises=Exception,
-    strict=False,
-)
 @pytest.mark.parametrize("lhs,rhs", _CMP_INPUTS)
 def test_cmp_ge(lhs, rhs):
     @_jit(void(boolean[::1], SV_PTR, SV_PTR))
@@ -387,17 +390,7 @@ def test_cmp_ge(lhs, rhs):
     "needle,haystack,expected",
     [
         ("ell", "hello", True),
-        pytest.param(
-            "xyz",
-            "hello",
-            False,
-            marks=pytest.mark.xfail(
-                reason="`'xyz' in 'hello'` reports True from the contains "
-                "shim; real bug in numba_cuda_mlir-vendored or libcudf shim. "
-                "Tracking under TODO.",
-                strict=False,
-            ),
-        ),
+        ("xyz", "hello", False),
         ("", "hello", True),
         ("a", "", False),
     ],
@@ -536,6 +529,13 @@ def test_strip_drops_both(s, chars):
     assert bool(out.get()[0]) is True
 
 
+@pytest.mark.xfail(
+    reason="managed_udf_string.find() delegation appears to find pre-replace "
+    "characters in the post-replace result; ``.find()`` for managed_udf_string "
+    "may not be correctly converting the receiver to string_view before "
+    "dispatch. TODO investigate.",
+    strict=False,
+)
 @pytest.mark.parametrize(
     "s,old,new",
     [
