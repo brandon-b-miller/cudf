@@ -529,13 +529,6 @@ def test_strip_drops_both(s, chars):
     assert bool(out.get()[0]) is True
 
 
-@pytest.mark.xfail(
-    reason="managed_udf_string.find() delegation appears to find pre-replace "
-    "characters in the post-replace result; ``.find()`` for managed_udf_string "
-    "may not be correctly converting the receiver to string_view before "
-    "dispatch. TODO investigate.",
-    strict=False,
-)
 @pytest.mark.parametrize(
     "s,old,new",
     [
@@ -551,6 +544,12 @@ def test_replace_old_no_longer_present(s, old, new):
     ``new``. The check uses ``managed.find(old) == -1`` rather than
     ``old not in managed`` because ``operator.contains(managed, sv)`` is
     not registered (only ``contains(sv, sv)`` is) at this layer.
+
+    Requires the numba-cuda-mlir extsi-widening fix
+    (see https://github.com/NVIDIA/numba-cuda-mlir, branch
+    ``fix/extsi-binary-ops``); without it, ``find()`` returns int32 ``-1``
+    which is then zero-extended to int64 ``0xFFFFFFFF`` and compares
+    incorrectly against the int64 literal ``-1``.
     """
 
     @_jit(void(boolean[::1], SV_PTR, SV_PTR, SV_PTR), nrt=True)
