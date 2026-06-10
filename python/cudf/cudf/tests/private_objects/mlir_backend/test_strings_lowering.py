@@ -29,33 +29,32 @@ import pytest
 
 pytest.importorskip("numba_cuda_mlir")
 
-from numba_cuda_mlir import cuda  # noqa: E402
-from numba_cuda_mlir.types import (  # noqa: E402
+from numba_cuda_mlir import cuda
+from numba_cuda_mlir.types import (
     CPointer,
     boolean,
     int32,
     void,
 )
 
-import cudf  # noqa: E402
-from cudf._lib import strings_udf  # noqa: E402
-from cudf.core.buffer import as_buffer  # noqa: E402
-from cudf.core.udf.mlir_backend.strings_typing import (  # noqa: E402
+import cudf
+
+# Shim registrations are loaded by importing the module; we don't call
+# anything from it directly here.
+import cudf.core.udf.mlir_backend.strings_lowering
+from cudf._lib import strings_udf
+from cudf.core.buffer import as_buffer
+from cudf.core.udf.mlir_backend.strings_typing import (
     StrViewArrayWrapper,
     str_view_arg_handler,
     string_view,
 )
-from cudf.core.udf.nrt_utils import nrt_enabled  # noqa: E402
-from cudf.core.udf.utils import (  # noqa: E402
+from cudf.core.udf.nrt_utils import nrt_enabled
+from cudf.core.udf.utils import (
     DEPRECATED_SM_REGEX,
     UDF_SHIM_FILE,
 )
-from cudf.utils._numba import _CUDFNumbaConfig  # noqa: E402
-
-# Shim registrations are loaded by importing the module; we don't call
-# anything from it directly here.
-import cudf.core.udf.mlir_backend.strings_lowering  # noqa: E402, F401
-
+from cudf.utils._numba import _CUDFNumbaConfig
 
 # --- helpers ----------------------------------------------------------------
 
@@ -74,7 +73,9 @@ def _str_view_array(strings) -> StrViewArrayWrapper:
     """
     sr = cudf.Series(strings)
     wrapper = StrViewArrayWrapper(
-        as_buffer(strings_udf.column_to_string_view_array(sr._column.plc_column))
+        as_buffer(
+            strings_udf.column_to_string_view_array(sr._column.plc_column)
+        )
     )
     wrapper._owner = sr
     return wrapper
@@ -129,7 +130,7 @@ def _run_one(kernel, out, sv_arg):
         ("a", 1),
         ("abc", 3),
         ("héllo", 5),  # `len` returns code-point count, matching Python.
-        ("\U0001F600", 1),
+        ("\U0001f600", 1),
     ],
 )
 def test_len(s, expected_chars):
@@ -302,7 +303,13 @@ def test_endswith(s, suffix, expected):
 # Each cmpop is its own test function (no ``exec``) so the failure
 # fingerprint is unambiguous.
 
-_CMP_INPUTS = [("abc", "abc"), ("abc", "abd"), ("abc", "ab"), ("", ""), ("a", "")]
+_CMP_INPUTS = [
+    ("abc", "abc"),
+    ("abc", "abd"),
+    ("abc", "ab"),
+    ("", ""),
+    ("a", ""),
+]
 
 
 @pytest.mark.parametrize("lhs,rhs", _CMP_INPUTS)
@@ -569,7 +576,8 @@ def test_replace_old_no_longer_present(s, old, new):
 
 def test_managed_method_delegation_concat_then_upper_isupper():
     """``(a + b).upper().isupper()`` exercises managed_udf_string -> string_view
-    delegation for the ``upper`` shim and the ``isupper`` predicate."""
+    delegation for the ``upper`` shim and the ``isupper`` predicate.
+    """
 
     @_jit(void(boolean[::1], SV_PTR, SV_PTR), nrt=True)
     def k(out, a, b):

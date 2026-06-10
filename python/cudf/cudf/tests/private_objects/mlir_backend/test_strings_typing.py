@@ -22,10 +22,10 @@ import pytest
 
 pytest.importorskip("numba_cuda_mlir")
 
-from numba_cuda_mlir import types  # noqa: E402
-from numba_cuda_mlir.numba_cuda.typing.typeof import typeof  # noqa: E402
+from numba_cuda_mlir import types
+from numba_cuda_mlir.numba_cuda.typing.typeof import typeof
 
-from cudf.core.udf.mlir_backend.strings_typing import (  # noqa: E402
+from cudf.core.udf.mlir_backend.strings_typing import (
     ManagedStrArrayWrapper,
     ManagedUDFString,
     NRT_decref,
@@ -34,7 +34,6 @@ from cudf.core.udf.mlir_backend.strings_typing import (  # noqa: E402
     StrViewArrayWrapper,
     UDFString,
     managed_udf_string,
-    size_type,
     str_view_arg_handler,
     string_view,
 )
@@ -151,7 +150,8 @@ def test_module_exposes_str_view_arg_handler_singleton():
 
 def test_nrt_decref_is_callable_stub():
     """``NRT_decref`` is a Python-callable placeholder; the real lowering
-    is registered in ``strings_lowering`` via the typing template."""
+    is registered in ``strings_lowering`` via the typing template.
+    """
     # TODO for Brandon - can we just use the numba-cuda-mlir decref without
     # having to wrap our own now?
     # No-op when called from Python - only meaningful inside a JIT context.
