@@ -5,7 +5,11 @@ from functools import cache
 
 import numpy as np
 from numba_cuda_mlir import cuda, types
-from numba_cuda_mlir.extending import lowering_registry, typing_registry
+from numba_cuda_mlir.extending import (
+    lowering_registry,
+    refresh_registries,
+    typing_registry,
+)
 from numba_cuda_mlir.numba_cuda.np import numpy_support
 from numba_cuda_mlir.numba_cuda.typing.templates import AbstractTemplate
 from numba_cuda_mlir.typing import signature as nb_signature
@@ -188,6 +192,7 @@ class DataFrameApplyKernel(ApplyKernelBase):
     def _get_kernel_string_exec_context(self):
         row_type = self._get_frame_type()
         register_row_slot(row_type)
+        refresh_registries(include_uninitialized_cuda=False)
         col_names = tuple(_supported_cols_from_frame(self.frame).keys())
         return {
             "cuda": cuda,

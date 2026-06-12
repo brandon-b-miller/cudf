@@ -20,11 +20,6 @@ from cudf.core.udf.mlir_backend import (
 # happen in the _register() calls above are therefore "new" to the
 # RegistryLoader and won't be seen by the contexts unless we re-install.
 # Force a re-install here, after every backend module has finished registering.
-from numba_cuda_mlir.descriptor import mlir_target as _mlir_target
-from numba_cuda_mlir.extending import (
-    lowering_registry as _extending_lowering_registry,
-    typing_registry as _extending_typing_registry,
-)
+from numba_cuda_mlir.extending import refresh_registries
 
-_mlir_target.typing_context.install_registry(_extending_typing_registry)
-_mlir_target.target_context.install_registry(_extending_lowering_registry)
+refresh_registries(include_uninitialized_cuda=False)

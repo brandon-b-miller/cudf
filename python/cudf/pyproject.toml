@@ -108,6 +108,8 @@ filterwarnings = [
     "ignore:FNV hashing is not implemented in Numba.*:UserWarning",
     # Allow running UDF tests on older architectures
     "ignore:.*NVRTC log messages whilst compiling.*:UserWarning",
+    # numba-cuda-mlir LTO optimization warning (advisory, not a real error)
+    "ignore:Linking LTOIR with optimization_level:numba_cuda_mlir.numba_cuda.core.errors.NumbaWarning",
 ]
 markers = [
     "spilling: mark benchmark a good candidate to run with `CUDF_SPILL=ON`",

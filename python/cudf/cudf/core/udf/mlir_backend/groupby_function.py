@@ -11,6 +11,7 @@ from numba_cuda_mlir.numba_cuda.core.errors import (
     TypingError as CoreTypingError,
     TypingError as CudaTypingError,
 )
+from numba_cuda_mlir.extending import refresh_registries
 from numba_cuda_mlir.numba_cuda.np import numpy_support
 
 from cudf.core.column import as_column, column_empty
@@ -224,6 +225,7 @@ class GroupByApplyKernel(ApplyKernelBase):
         dataframe_group_type = self._get_frame_type()
         register_group_slot(dataframe_group_type)
         register_group_slot_lowering(dataframe_group_type)
+        refresh_registries(include_uninitialized_cuda=False)
         col_names = tuple(
             _supported_cols_from_frame(
                 self.frame, supported_types=SUPPORTED_GROUPBY_NUMPY_TYPES
