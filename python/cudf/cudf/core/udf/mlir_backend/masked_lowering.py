@@ -65,6 +65,24 @@ from cudf.core.udf.mlir_backend.strings_typing import (
     size_type,
 )
 
+from cudf.core.missing import NA as _CUDF_NA
+
+# WORKAROUND (released numba-cuda-mlir): the module-attribute constant builder
+# lowers ``cudf.NA`` by calling ``convert(pandas.NA, NoneType)``, which has no
+# singledispatch handler for the opaque sentinel instance (only for opaque
+# *type* values via ``opaque_data_model_convert``). Represent ``cudf.NA`` like
+# a None value -- return the target ``NoneType`` -- so it stores an opaque
+# sentinel; the subsequent ``cast(na_type -> MaskedType)`` builds the invalid
+# mask and ignores this value. See mlir_upstream_notes.md item 3.
+from numba_cuda_mlir.lowering_utilities import (  # noqa: E402
+    unverified_convert as _unverified_convert,
+)
+
+
+@_unverified_convert.register(type(_CUDF_NA))
+def _convert_cudf_na_sentinel(value, target_type, **_):
+    return target_type
+
 
 def _ipowi_expand(base, exp, ty):
     """
