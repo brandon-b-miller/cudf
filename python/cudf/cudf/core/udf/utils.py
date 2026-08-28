@@ -95,8 +95,14 @@ DEPRECATED_SM_REGEX = "Architectures prior to '<compute/sm>_75' are deprecated"
 
 
 def _all_dtypes_from_frame(frame, supported_types=JIT_SUPPORTED_TYPES):
+    # String columns are modeled as object in the row struct (row_function
+    # maps object -> mlir_string). Current-main string dtypes (e.g.
+    # StringDtype(na_value=nan)) are not np.dtype-constructible, so normalize
+    # them to object even though they are "supported".
     return {
-        colname: dtype if str(dtype) in supported_types else np.dtype("O")
+        colname: dtype
+        if (str(dtype) in supported_types and not _is_string_dtype(dtype))
+        else np.dtype("O")
         for colname, dtype in frame._dtypes
     }
 
