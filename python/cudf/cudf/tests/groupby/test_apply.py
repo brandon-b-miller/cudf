@@ -11,7 +11,9 @@ import pytest
 import cudf
 from cudf import DataFrame
 from cudf.core.udf._ops import arith_ops, comparison_ops, unary_ops
-from cudf.core.udf.groupby_typing import SUPPORTED_GROUPBY_NUMPY_TYPES
+from cudf.core.udf.mlir_backend.groupby_typing import (
+    SUPPORTED_GROUPBY_NUMPY_TYPES,
+)
 from cudf.core.udf.utils import UDFError, precompiled
 from cudf.testing import assert_eq, assert_groupby_results_equal
 from cudf.testing._utils import expect_warning_if
