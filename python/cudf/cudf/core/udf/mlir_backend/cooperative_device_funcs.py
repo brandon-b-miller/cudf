@@ -637,9 +637,16 @@ def _build_std_module(dtype, *, take_sqrt=True, name=None):
             total_sum = llvm.load(f64_ty, _gep_typed3(shm3_sum, zero, f64_ty))
             total_sq = llvm.load(f64_ty, _gep_typed3(shm3_sq, zero, f64_ty))
             n_f64 = arith.uitofp(f64_ty, size)
-            mean_val = arith.divf(total_sum, n_f64)
-            mean_sq = arith.divf(total_sq, n_f64)
-            variance = arith.subf(mean_sq, arith.mulf(mean_val, mean_val))
+            one_f64 = arith.constant(f64_ty, 1.0)
+            # Sample variance (ddof=1) to match pandas groupby var/std:
+            #   (sum(x^2) - sum(x)^2 / n) / (n - 1)
+            # For n == 1 this is 0/0 -> NaN, matching pandas.
+            sum_sq_over_n = arith.divf(
+                arith.mulf(total_sum, total_sum), n_f64
+            )
+            numerator = arith.subf(total_sq, sum_sq_over_n)
+            n_minus_1 = arith.subf(n_f64, one_f64)
+            variance = arith.divf(numerator, n_minus_1)
 
             if take_sqrt:
                 from numba_cuda_mlir._mlir.dialects import math as mlir_math
