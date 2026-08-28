@@ -133,8 +133,11 @@ def jit_groupby_apply(offsets, grouped_values, function, *args):
     attrs = kern_def._codelibrary.get_kernel_attributes()
     tpb = min(int(blocklim), attrs["max_threads_per_block"])
 
-    # Dynamic shared memory: 16 bytes broadcast + 1024*8 reduction scratch
-    sharedmem = 16 + 1024 * 8
+    # Dynamic shared memory: 16 bytes broadcast slot + reduction scratch.
+    # Two-pass reductions (std/var/corr) use a second 1024*8 scratch region
+    # at offset (16 + 1024*8), so size for two regions to avoid an
+    # out-of-bounds shared-memory write (illegal address) for those ops.
+    sharedmem = 16 + 2 * 1024 * 8
 
     # Launch kernel
     with _CUDFNumbaConfig():

@@ -169,6 +169,10 @@ def std_func_name(dtype):
     return f"_coop_std_{_dtype_tag(dtype)}"
 
 
+def var_func_name(dtype):
+    return f"_coop_var_{_dtype_tag(dtype)}"
+
+
 def exp_func_name(dtype):
     return f"_coop_exp_{_dtype_tag(dtype)}"
 
@@ -552,15 +556,16 @@ def _build_max_module(dtype):
         return str(module)
 
 
-def _build_std_module(dtype):
-    """Build MLIR module for _coop_std_{dtype}(ptr data, i64 size, ptr shm) -> f64.
+def _build_std_module(dtype, *, take_sqrt=True, name=None):
+    """Build MLIR module for _coop_std_/_coop_var_{dtype}(ptr, i64, ptr) -> f64.
 
-    Computes population std = sqrt(mean(x²) - mean(x)²) using two parallel
+    Computes population variance = mean(x²) - mean(x)² using two parallel
     reductions in shared memory:
       shm[_SHM_REDUCTION_OFFSET ..] for partial sums
       shm[_SHM_REDUCTION_OFFSET + 1024*8 ..] for partial sum-of-squares
+    Returns sqrt(variance) when take_sqrt (std), else variance (var).
     """
-    name = std_func_name(dtype)
+    name = name or std_func_name(dtype)
     _SHM_SQ_OFFSET = _SHM_REDUCTION_OFFSET + _MAX_BLOCK_SIZE * 8
 
     with context.get_context(), ir.Location.unknown():
@@ -636,11 +641,22 @@ def _build_std_module(dtype):
             mean_sq = arith.divf(total_sq, n_f64)
             variance = arith.subf(mean_sq, arith.mulf(mean_val, mean_val))
 
-            from numba_cuda_mlir._mlir.dialects import math as mlir_math
-            std_val = mlir_math.sqrt(variance)
-            func.ReturnOp([std_val])
+            if take_sqrt:
+                from numba_cuda_mlir._mlir.dialects import math as mlir_math
+
+                result = mlir_math.sqrt(variance)
+            else:
+                result = variance
+            func.ReturnOp([result])
 
         return str(module)
+
+
+def _build_var_module(dtype):
+    """Population variance: std without the final sqrt."""
+    return _build_std_module(
+        dtype, take_sqrt=False, name=var_func_name(dtype)
+    )
 
 
 def _build_exp_module(dtype):
@@ -904,6 +920,10 @@ def _compile_cooperative_func(func_key, cc):
         _, dtype_name = func_key
         dtype = _TAG_TO_DTYPE[dtype_name]
         mlir_str = _build_std_module(dtype)
+    elif kind == "var":
+        _, dtype_name = func_key
+        dtype = _TAG_TO_DTYPE[dtype_name]
+        mlir_str = _build_var_module(dtype)
     elif kind == "exp":
         _, dtype_name = func_key
         dtype = _TAG_TO_DTYPE[dtype_name]

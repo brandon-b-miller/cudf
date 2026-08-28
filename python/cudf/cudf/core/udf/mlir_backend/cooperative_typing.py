@@ -92,6 +92,14 @@ class CoopStdTemplate(AbstractTemplate):
             return nb_signature(types.float64, recvr=self.this)
 
 
+class CoopVarTemplate(AbstractTemplate):
+    key = "CooperativeArray.var"
+
+    def generic(self, args, kws):
+        if len(args) == 0 and not kws:
+            return nb_signature(types.float64, recvr=self.this)
+
+
 
 _SUPPORTED_DTYPES = (types.float64, types.float32, types.int64, types.int32)
 
@@ -123,6 +131,9 @@ def _make_attrs_class(dtype):
 
         def resolve_std(self, mod):
             return types.BoundFunction(CoopStdTemplate, ca_ty)
+
+        def resolve_var(self, mod):
+            return types.BoundFunction(CoopVarTemplate, ca_ty)
 
     _Attrs.__name__ = f"CooperativeArray{dtype}Attrs"
     _Attrs.__qualname__ = _Attrs.__name__
