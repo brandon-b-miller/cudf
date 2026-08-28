@@ -55,20 +55,32 @@ def _lower_row_slot_impl(builder, target, row_type):
     builder.store_var(target, ptr)
 
 
+def _lower_row_slot(builder, target, args, kwargs):
+    """Lowering for ``_row_slot()``.
+
+    The row ``Record`` type is the target's numba type, so we derive the slot
+    size from it. Registered once at import time (released numba-cuda-mlir
+    snapshots the lowering registry into the target context at setup, so
+    per-kernel late registration would never be installed).
+    """
+    row_type = builder.get_numba_type(target.name)
+    _lower_row_slot_impl(builder, target, row_type)
+
+
 def register_row_slot(row_type):
-    """Register typing/lowering for _row_slot() for this kernel's row_type."""
+    """Record this kernel's row_type for _row_slot() typing (lowering is
+    registered once at import via _register_row_slot)."""
     global _row_slot_cases
     _row_slot_cases = [row_type]
-    sig_args = ()
-    lowering_registry.lower(_row_slot, *sig_args)(
-        lambda builder, target, args, kwargs: _lower_row_slot_impl(
-            builder, target, row_type
-        )
-    )
 
 
-def _register_row_slot_typing():
+def _register_row_slot():
     typing_registry.register_global(_row_slot, types.Function(RowSlotTemplate))
+    lowering_registry.lower(_row_slot)(_lower_row_slot)
+
+
+# Backwards-compatible alias (typing-only registration entry point).
+_register_row_slot_typing = _register_row_slot
 
 
 def _get_frame_row_type(dtype):
@@ -201,4 +213,4 @@ class DataFrameApplyKernel(ApplyKernelBase):
         }
 
 
-_register_row_slot_typing()
+_register_row_slot()
