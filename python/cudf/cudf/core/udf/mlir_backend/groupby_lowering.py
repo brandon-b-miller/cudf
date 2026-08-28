@@ -23,10 +23,21 @@ def _lower_group_slot_impl(builder, target, group_type):
     builder.store_var(target, ptr)
 
 
+def _lower_group_slot(builder, target, args, kwargs):
+    """Lowering for ``_group_slot()``.
+
+    The group record type is the target's numba type. Registered once at
+    import time: released numba-cuda-mlir snapshots the lowering registry into
+    the target context at setup, so per-kernel late registration is never
+    installed.
+    """
+    group_type = builder.get_numba_type(target.name)
+    _lower_group_slot_impl(builder, target, group_type)
+
+
 def register_group_slot_lowering(dataframe_group_type):
-    """Register lowering for _group_slot() for this kernel's group type."""
-    lower(_group_slot, *())(
-        lambda builder, target, args, kwargs: _lower_group_slot_impl(
-            builder, target, dataframe_group_type
-        )
-    )
+    """No-op retained for API compatibility; the _group_slot lowering is
+    registered once at import (typing records the group type separately)."""
+
+
+lower(_group_slot)(_lower_group_slot)
