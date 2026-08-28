@@ -161,6 +161,10 @@ def min_func_name(dtype):
     return f"_coop_min_{_dtype_tag(dtype)}"
 
 
+def max_func_name(dtype):
+    return f"_coop_max_{_dtype_tag(dtype)}"
+
+
 def std_func_name(dtype):
     return f"_coop_std_{_dtype_tag(dtype)}"
 
@@ -462,6 +466,81 @@ def _build_min_module(dtype):
                         reduced = arith.minimumf(my_v, p_v)
                     else:
                         reduced = arith.minsi(my_v, p_v)
+                    llvm.store(reduced, _gep_typed3(shm3, tid, elem_ty))
+                    scf.YieldOp([])
+                gpu.barrier()
+                scf.YieldOp([arith.shrui(s, one)])
+
+            result = llvm.load(elem_ty, _gep_typed3(shm3, zero, elem_ty))
+            func.ReturnOp([result])
+
+        return str(module)
+
+
+def _build_max_module(dtype):
+    """Build MLIR module for _coop_max_{dtype}(ptr data, i64 size, ptr shm) -> scalar.
+
+    Shared-memory tree reduction with max (mirror of _build_min_module).
+    """
+    name = max_func_name(dtype)
+
+    with context.get_context(), ir.Location.unknown():
+        elem_ty = _dtype_mlir_type(dtype)
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            gpu_mod = gpu.GPUModuleOp(sym_name=f"{name}_module")
+
+        body = gpu_mod.bodyRegion.blocks.append()
+        ft = ir.FunctionType.get([_ptr(), T.i64(), _ptr()], [elem_ty])
+        with ir.InsertionPoint(body):
+            fn = func.FuncOp(name=name, type=ft, visibility="public")
+            entry = fn.add_entry_block()
+
+        with ir.InsertionPoint(entry):
+            data, size, shm_base = fn.arguments
+            shm3 = _shm3_base(shm_base, _SHM_REDUCTION_OFFSET)
+
+            tid = _tid_x()
+            bdim = _bdim_x()
+            zero = _const_i64(0)
+            one = _const_i64(1)
+
+            first_elem = llvm.load(elem_ty, _gep_typed(data, zero, elem_ty))
+
+            partial = scf.ForOp(tid, size, bdim, [first_elem])
+            with ir.InsertionPoint(partial.body):
+                i = partial.induction_variable
+                acc = partial.body.arguments[1]
+                elem = llvm.load(elem_ty, _gep_typed(data, i, elem_ty))
+                if isinstance(elem_ty, (ir.F64Type, ir.F32Type)):
+                    new_acc = arith.maximumf(acc, elem)
+                else:
+                    new_acc = arith.maxsi(acc, elem)
+                scf.YieldOp([new_acc])
+
+            llvm.store(partial.results[0], _gep_typed3(shm3, tid, elem_ty))
+            gpu.barrier()
+
+            half_bdim = arith.shrui(bdim, one)
+            tree = scf.WhileOp([T.i64()], [half_bdim])
+            bb = tree.before.blocks.append(T.i64())
+            with ir.InsertionPoint(bb):
+                s_b = bb.arguments[0]
+                scf.ConditionOp(
+                    arith.cmpi(arith.CmpIPredicate.ugt, s_b, zero), [s_b])
+            ab = tree.after.blocks.append(T.i64())
+            with ir.InsertionPoint(ab):
+                s = ab.arguments[0]
+                in_range = arith.cmpi(arith.CmpIPredicate.ult, tid, s)
+                rif = scf.IfOp(in_range, [], has_else=False)
+                with ir.InsertionPoint(rif.then_block):
+                    partner = arith.addi(tid, s)
+                    my_v = llvm.load(elem_ty, _gep_typed3(shm3, tid, elem_ty))
+                    p_v = llvm.load(elem_ty, _gep_typed3(shm3, partner, elem_ty))
+                    if isinstance(elem_ty, (ir.F64Type, ir.F32Type)):
+                        reduced = arith.maximumf(my_v, p_v)
+                    else:
+                        reduced = arith.maxsi(my_v, p_v)
                     llvm.store(reduced, _gep_typed3(shm3, tid, elem_ty))
                     scf.YieldOp([])
                 gpu.barrier()
@@ -817,6 +896,10 @@ def _compile_cooperative_func(func_key, cc):
         _, dtype_name = func_key
         dtype = _TAG_TO_DTYPE[dtype_name]
         mlir_str = _build_min_module(dtype)
+    elif kind == "max":
+        _, dtype_name = func_key
+        dtype = _TAG_TO_DTYPE[dtype_name]
+        mlir_str = _build_max_module(dtype)
     elif kind == "std":
         _, dtype_name = func_key
         dtype = _TAG_TO_DTYPE[dtype_name]

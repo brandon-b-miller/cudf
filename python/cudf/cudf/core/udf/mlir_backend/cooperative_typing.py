@@ -9,15 +9,13 @@ from __future__ import annotations
 import operator
 
 from cudf.core.udf.mlir_backend.cooperative_types import CooperativeArrayType
+from numba_cuda_mlir.extending import typing_registry as registry
 from numba_cuda_mlir.numba_cuda import types
 from numba_cuda_mlir.numba_cuda.typing import signature as nb_signature
 from numba_cuda_mlir.numba_cuda.typing.templates import (
     AbstractTemplate,
     AttributeTemplate,
-    Registry,
 )
-
-registry = Registry()
 
 
 class CooperativeArray:
@@ -70,6 +68,14 @@ class CoopMinTemplate(AbstractTemplate):
             return nb_signature(self.this.dtype, recvr=self.this)
 
 
+class CoopMaxTemplate(AbstractTemplate):
+    key = "CooperativeArray.max"
+
+    def generic(self, args, kws):
+        if len(args) == 0 and not kws:
+            return nb_signature(self.this.dtype, recvr=self.this)
+
+
 class CoopExpTemplate(AbstractTemplate):
     key = "CooperativeArray.exp"
 
@@ -108,6 +114,9 @@ def _make_attrs_class(dtype):
 
         def resolve_min(self, mod):
             return types.BoundFunction(CoopMinTemplate, ca_ty)
+
+        def resolve_max(self, mod):
+            return types.BoundFunction(CoopMaxTemplate, ca_ty)
 
         def resolve_exp(self, mod):
             return types.BoundFunction(CoopExpTemplate, ca_ty)

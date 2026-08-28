@@ -6,6 +6,8 @@ MLIR/numba_cuda_mlir backend.
 """
 
 from cudf.core.udf.mlir_backend import (
+    cooperative_lowering,
+    cooperative_typing,
     groupby_lowering,
     groupby_typing,
     masked_lowering,

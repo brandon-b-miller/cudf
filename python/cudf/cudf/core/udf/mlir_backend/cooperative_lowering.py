@@ -21,11 +21,9 @@ from numba_cuda_mlir.lowering_utilities import (
     GEP_DYNAMIC_INDEX,
     get_or_insert_function,
 )
-from numba_cuda_mlir.lowering_registry import LoweringRegistry
+from numba_cuda_mlir.extending import lowering_registry as registry
 from cudf.core.udf.mlir_backend.cooperative_types import CooperativeArrayType
 from numba_cuda_mlir.numba_cuda import types as nb_types
-
-registry = LoweringRegistry()
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +416,55 @@ for _dt in _SUPPORTED_DTYPES:
     _make_min_lower(CooperativeArrayType(_dt))
 
 
+def _lower_max(builder, target, args, kwargs):
+    """Emit a call to the outlined _coop_max_{dtype} device function."""
+    from cudf.core.udf.mlir_backend.cooperative_device_funcs import (
+        max_func_name, register_needed_func, _dtype_tag,
+    )
+
+    self_var = args[0]
+    ca_val = builder.load_var(self_var)
+    ca_type = builder.get_numba_type(self_var.name)
+    dtype = ca_type.dtype
+    elem_ty = _dtype_mlir_type(dtype)
+
+    data = ca_extract_data(ca_val)
+    size = ca_extract_size(ca_val)
+
+    shm = _shm_base_ptr(builder)
+    fname = max_func_name(dtype)
+    ft = ir.FunctionType.get([_ptr(), T.i64(), _ptr()], [elem_ty])
+    gm = builder.mlir_gpu_module
+    callee = get_or_insert_function(fname, ft, gm)
+    result = func.call(
+        result=[elem_ty], callee=callee.name.value,
+        operands_=[data, size, shm],
+    )
+    builder.store_var(target, result)
+
+    register_needed_func(builder.metadata, ("max", _dtype_tag(dtype)))
+
+
+def _lower_max_with_release(builder, target, args, kwargs):
+    """Run the max, then release the extra reference taken at getattr time."""
+    self_var = args[0]
+    _lower_max(builder, target, args, kwargs)
+    ca_val = builder.load_var(self_var)
+    mi = ca_extract_meminfo(ca_val)
+    _call_nrt(builder.mlir_gpu_module, "NRT_decref", [_ptr()], [], [mi])
+
+
+for _dt in _SUPPORTED_DTYPES:
+    def _make_max_lower(ca_type):
+        @registry.lower_getattr(ca_type, "max")
+        def _lower_ca_max_attr(context, builder, target, value, attr=None):
+            ca_val = builder.load_var(value)
+            mi = ca_extract_meminfo(ca_val)
+            _call_nrt(builder.mlir_gpu_module, "NRT_incref", [_ptr()], [], [mi])
+            builder.store_var(target, DeferredMethodCall(value, _lower_max_with_release))
+    _make_max_lower(CooperativeArrayType(_dt))
+
+
 # ---------------------------------------------------------------------------
 # .std() reduction: thin call to separately-compiled device function
 # ---------------------------------------------------------------------------
@@ -679,3 +726,47 @@ def _register_cooperative_array_constructor():
 
 
 _register_cooperative_array_constructor()
+
+
+def _install_cooperative_link_patch():
+    """Link cooperative device-function PTX into the kernel at complete().
+
+    WORKAROUND (released numba-cuda-mlir): the fork wired
+    ``link_cooperative_funcs`` into ``mlir_optimization.optimize`` just before
+    ``linker.complete()``; the release has no such hook. Wrap ``optimize`` so
+    that, for kernels that requested cooperative device functions, the linker's
+    ``complete`` first adds the needed PTX. See mlir_upstream_notes.md item 4.
+    """
+    import numba_cuda_mlir.mlir_optimization as _opt
+    from numba_cuda_mlir.numba_cuda.cudadrv.driver import _Linker
+
+    from cudf.core.udf.mlir_backend.cooperative_device_funcs import (
+        _NEEDED_FUNCS_KEY,
+        link_cooperative_funcs,
+    )
+
+    if getattr(_opt.optimize, "_cudf_coop_patched", False):
+        return
+
+    _orig_optimize = _opt.optimize
+
+    def _optimize(cres):
+        if not cres.metadata.get(_NEEDED_FUNCS_KEY):
+            return _orig_optimize(cres)
+        _orig_complete = _Linker.complete
+
+        def _complete(self):
+            link_cooperative_funcs(self, cres.metadata)
+            return _orig_complete(self)
+
+        _Linker.complete = _complete
+        try:
+            return _orig_optimize(cres)
+        finally:
+            _Linker.complete = _orig_complete
+
+    _optimize._cudf_coop_patched = True
+    _opt.optimize = _optimize
+
+
+_install_cooperative_link_patch()
