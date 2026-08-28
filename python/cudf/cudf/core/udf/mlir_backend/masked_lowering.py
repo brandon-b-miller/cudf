@@ -696,8 +696,18 @@ def _register():
         m = builder.load_var(args[0])
         st = llvm.StructType(m.type)
         m_val, m_valid = _extract_masked_value_valid(m, st.body[0], st.body[1])
-        bool_mlir_ty = builder.get_mlir_type(types.boolean)
-        payload_as_bool = bool_of(convert(m_val, bool_mlir_ty))
+        inner_ty = builder.get_numba_type(args[0].name).value_type
+        if isinstance(inner_ty, types.Float):
+            # WORKAROUND (released numba-cuda-mlir): convert(float -> i1) uses
+            # arith.fptoui to a 1-bit int, which is undefined/inverted for a
+            # truth test. Compute (payload != 0) directly. Upstream note #5.
+            zero = arith.constant(m_val.type, 0.0)
+            payload_as_bool = arith.cmpf(
+                arith.CmpFPredicate.UNE, m_val, zero
+            )
+        else:
+            bool_mlir_ty = builder.get_mlir_type(types.boolean)
+            payload_as_bool = bool_of(convert(m_val, bool_mlir_ty))
         result = arith.select(m_valid, payload_as_bool, false())
         builder.store_var(target, result)
 
