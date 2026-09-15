@@ -31,8 +31,12 @@ from cudf.core.udf.api import Masked, pack_return
 # used by the column dtypes flowing into the kernels.
 _units = ("ns", "us", "ms", "s")
 
+# Value-type classes a MaskedType may hold. Floats are handled separately via
+# ``nb_types.real_domain`` (``float32``/``float64``) rather than ``types.Float``
+# so that ``float16`` -- which is not a valid cuDF column dtype -- is excluded;
+# ``types.Number`` would likewise wrongly admit ``float16`` and complex types.
 _SUPPORTED_MASKED_VALUE_TYPE_CLASSES = (
-    types.Number,
+    types.Integer,
     types.Boolean,
     types.NPDatetime,
     types.NPTimedelta,
@@ -48,6 +52,21 @@ _supported_value_type_instances = (
 )
 
 
+def _is_supported_scalar_value_type(ty: types.Type) -> bool:
+    """Whether ``ty`` is a bare scalar value type cuDF UDFs support: an integer,
+    ``float32``/``float64``, or boolean.
+
+    Floats are matched via ``nb_types.real_domain`` (``float32``/``float64``)
+    rather than ``types.Float`` so ``float16`` is excluded, and ``types.Number``
+    is avoided so complex types are excluded -- neither is a valid cuDF column
+    dtype.
+    """
+    return (
+        isinstance(ty, (types.Integer, types.Boolean))
+        or ty in nb_types.real_domain
+    )
+
+
 class MaskedType(types.Type):
     """Logical struct type used for propagation of nulls. Semantically carries
     the column value and corresponding validity bit from the columns bitmask.
@@ -61,7 +80,10 @@ class MaskedType(types.Type):
     def __init__(self, value: types.Type) -> None:
         if isinstance(value, types.Literal):
             value = unliteral(value)
-        if isinstance(value, _SUPPORTED_MASKED_VALUE_TYPE_CLASSES):
+        if (
+            isinstance(value, _SUPPORTED_MASKED_VALUE_TYPE_CLASSES)
+            or value in nb_types.real_domain
+        ):
             self.value_type = value
         else:
             self.value_type = types.Poison(value)
@@ -180,8 +202,8 @@ class MaskedScalarScalarOp(AbstractTemplate):
     def generic(
         self, args: tuple[types.Type, ...], kws: dict
     ) -> Signature | None:
-        if isinstance(args[0], MaskedType) and isinstance(
-            args[1], (types.Number, types.Boolean)
+        if isinstance(args[0], MaskedType) and _is_supported_scalar_value_type(
+            args[1]
         ):
             return_type = self.context.resolve_function_type(
                 self.key, (args[0].value_type, args[1]), kws
@@ -195,7 +217,7 @@ class MaskedScalarScalarOp(AbstractTemplate):
                 self.key, (args[0].value_type, scalar_ty), kws
             ).return_type
             return nb_signature(MaskedType(return_type), args[0], args[1])
-        if isinstance(args[0], (types.Number, types.Boolean)) and isinstance(
+        if _is_supported_scalar_value_type(args[0]) and isinstance(
             args[1], MaskedType
         ):
             return_type = self.context.resolve_function_type(
@@ -334,9 +356,14 @@ class MaskedSequenceContainsTemplate(AbstractTemplate):
 class PackReturnTemplate(AbstractTemplate):
     """``pack_return(x)`` -> ``Masked``.
 
-    Identity for a Masked input; a bare numeric/boolean scalar is wrapped with
-    ``valid=True``. Used by the apply-kernel templates to normalize a UDF's
-    return value (which may be a Masked or a plain scalar).
+    Identity for a Masked input; a bare scalar is wrapped with ``valid=True``.
+    Used by the apply-kernel templates to normalize a UDF's return value (which
+    may be a Masked or a plain scalar).
+
+    Only the scalar types with a ``pack_return`` lowering are accepted --
+    integers, ``float32``/``float64``, and ``boolean``. ``float16`` and complex
+    types are rejected here (typing) rather than being accepted and then failing
+    later at lowering.
     """
 
     def generic(
@@ -344,7 +371,10 @@ class PackReturnTemplate(AbstractTemplate):
     ) -> Signature | None:
         if isinstance(args[0], MaskedType):
             return nb_signature(args[0], args[0])
-        if isinstance(args[0], (types.Number, types.Boolean)):
+        # Accept exactly the scalar types that have a pack_return lowering:
+        # integers, float32/float64, and boolean. float16/complex are not valid
+        # cuDF column dtypes and have no lowering, so they are rejected here.
+        if _is_supported_scalar_value_type(args[0]):
             return nb_signature(MaskedType(args[0]), args[0])
         return None
 

@@ -13,6 +13,7 @@ from numba_cuda_mlir import (
     cuda,
     types,
 )
+from numba_cuda_mlir.numba_cuda.core.errors import TypingError
 
 import cudf.core.udf.mlir_backend.masked_lowering
 import cudf.core.udf.mlir_backend.masked_typing  # noqa: F401
@@ -1148,3 +1149,26 @@ def test_pack_return_scalar_literal_constant():
     _launch(k, out_v, out_valid)
     assert int(out_v.get()[0]) == 7
     assert bool(out_valid.get()[0]) is True
+
+
+@pytest.mark.parametrize(
+    "np_dtype", [np.float16, np.complex64], ids=["float16", "complex64"]
+)
+def test_pack_return_rejects_unlowered_scalar(np_dtype):
+    """pack_return rejects scalar types with no lowering (float16/complex) at
+    typing, rather than accepting them and failing later during lowering.
+    """
+
+    @cuda.jit
+    def k(out_v, out_valid, a):
+        m = pack_return(a[0])
+        out_v[0] = m.value
+        out_valid[0] = m.valid
+
+    with pytest.raises(TypingError):
+        _launch(
+            k,
+            cp.zeros(1, dtype=np_dtype),
+            cp.zeros(1, dtype=np.bool_),
+            cp.zeros(1, dtype=np_dtype),
+        )
