@@ -496,7 +496,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   _stream.sync();
 }
 
-reader_impl::reader_impl() : _stream{cudaStream_t{nullptr}}, _options{} {}
+reader_impl::reader_impl() : _stream{cudaStream_t{cudaStreamDefault}}, _options{} {}
 
 reader_impl::reader_impl(std::vector<std::unique_ptr<datasource>>&& sources,
                          std::vector<FileMetaData>&& parquet_metadatas,
@@ -624,7 +624,8 @@ void reader_impl::populate_metadata(table_metadata& out_metadata)
     auto const& schema               = _metadata->get_schema(_output_column_schemas[i]);
     out_metadata.schema_info[i].name = schema.name;
     out_metadata.schema_info[i].is_nullable =
-      schema.repetition_type != FieldRepetitionType::REQUIRED;
+      schema.repetition_type != FieldRepetitionType::REQUIRED or
+      _metadata->is_nullable_across_sources(_output_column_schemas[i]);
   }
 
   // Return user metadata

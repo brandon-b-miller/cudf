@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "expression_transform_helpers.hpp"
 #include "timestamp_utils.cuh"
 
 #include <cudf/ast/detail/expression_transformer.hpp>
@@ -306,9 +307,8 @@ class stats_caster_base {
  */
 class stats_columns_collector : public ast::detail::expression_transformer {
  public:
-  stats_columns_collector() = default;
-
-  stats_columns_collector(ast::expression const& expr, cudf::size_type num_columns);
+  stats_columns_collector(ast::expression const& expr,
+                          std::span<cudf::data_type const> output_dtypes);
 
   /**
    * @copydoc ast::detail::expression_transformer::visit(ast::literal const& )
@@ -332,19 +332,20 @@ class stats_columns_collector : public ast::detail::expression_transformer {
   std::reference_wrapper<ast::expression const> visit(ast::operation const& expr) override;
 
   /**
-   * @brief Return a boolean vector indicating input columns that can participate in stats based
+   * @brief Return a boolean vector indicating which input columns can participate in stats based
    * filtering
    *
    * @return Boolean vector indicating input columns that can participate in stats based filtering
    */
-  std::pair<thrust::host_vector<bool>, bool> get_stats_columns_mask() &&;
+  thrust::host_vector<bool> get_stats_columns_mask() &&;
 
  protected:
-  size_type _num_columns;
+  explicit stats_columns_collector(std::span<cudf::data_type const> output_dtypes);
+
+  std::span<cudf::data_type const> _output_dtypes;
 
  private:
   thrust::host_vector<bool> _columns_mask;
-  bool _has_is_null_operator = false;
 };
 
 /**
@@ -353,40 +354,71 @@ class stats_columns_collector : public ast::detail::expression_transformer {
  * This is used in row group filtering based on predicate.
  * statistics min value of a column is referenced by column_index*3
  * statistics max value of a column is referenced by column_index*3+1
- * statistics is_null value of a column is referenced by column_index*3+2
+ * statistics all_nulls value of a column is referenced by column_index*3+2
  */
-class stats_expression_converter : public stats_columns_collector {
+class stats_expression_converter final : public parquet_expression_simplifier {
  public:
   stats_expression_converter(ast::expression const& expr,
-                             size_type num_columns,
-                             bool has_is_null_operator,
-                             cuda::stream_ref stream);
-
-  // Bring all overrides of `visit` from stats_columns_collector into scope
-  using stats_columns_collector::visit;
+                             std::span<cudf::data_type const> output_dtypes);
 
   /**
-   * @copydoc ast::detail::expression_transformer::visit(ast::operation const& )
-   */
-  std::reference_wrapper<ast::expression const> visit(ast::operation const& expr) override;
-
-  /**
-   * @brief Returns the AST to apply on Column chunk statistics.
+   * @brief Returns the AST to apply on column chunk statistics
    *
-   * @return AST operation expression
+   * @return The statistics expression, or std::nullopt if no row group can be pruned
    */
-  [[nodiscard]] std::reference_wrapper<ast::expression const> get_stats_expr() const;
+  [[nodiscard]] simplified_expression_opt get_stats_expr() const;
+
+ protected:
+  /**
+   * @copydoc parquet_expression_simplifier::simplify_comparison
+   */
+  [[nodiscard]] simplified_expression_opt simplify_comparison(ast::ast_operator op,
+                                                              ast::column_reference const& col_ref,
+                                                              ast::literal const& literal) override;
 
   /**
-   * @brief Delete stats columns mask getter as it's not needed in the derived class
+   * @copydoc parquet_expression_simplifier::simplify_unary_op
+   *
+   * `IS_NULL` is the only unary operation statistics can evaluate via the all-nulls column.
    */
-  thrust::host_vector<bool> get_stats_columns_mask() && = delete;
+  [[nodiscard]] simplified_expression_opt simplify_unary_op(
+    ast::ast_operator op, ast::column_reference const& col_ref) override;
+
+  /**
+   * @copydoc parquet_expression_simplifier::simplify_negated_unary_op
+   *
+   * The three-state all-nulls value can be safely negated for `NOT(IS_NULL(col))`.
+   */
+  [[nodiscard]] simplified_expression_opt simplify_negated_unary_op(
+    ast::ast_operator op, ast::column_reference const& col_ref) override;
+
+  /**
+   * @copydoc parquet_expression_simplifier::simplify_negated_comparison
+   *
+   * `NOT(col < val)` is converted to `col >= val` instead of negating `vmin < val`.
+   */
+  [[nodiscard]] simplified_expression_opt simplify_negated_comparison(
+    ast::ast_operator op,
+    ast::column_reference const& col_ref,
+    ast::literal const& literal) override;
 
  private:
-  ast::tree _stats_expr;
-  cudf::size_type _stats_cols_per_column;
-  std::unique_ptr<cudf::numeric_scalar<bool>> _always_true_scalar;
-  std::unique_ptr<ast::literal> _always_true;
+  /// Number of statistics columns per input table column: min, max and all-nulls
+  static constexpr size_type stats_cols_per_column = 3;
+
+  /**
+   * @brief Returns `not_all_null AND stats_expr` for a column, so that a chunk holding nothing but
+   * nulls is pruned by a predicate needing a non-null value to match, rather than kept because its
+   * absent min and max leave the comparison null
+   *
+   * @param col_index Index of the column in the input table
+   * @param stats_expr Statistics expression to guard, already pushed onto the tree
+   * @return The guarded statistics expression
+   */
+  [[nodiscard]] ast::expression const& push_non_null_guard(size_type col_index,
+                                                           ast::expression const& stats_expr);
+
+  simplified_expression_opt _stats_expr;
 };
 
 }  // namespace cudf::io::parquet::detail
