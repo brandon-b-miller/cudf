@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import numpy as np
 from numba_cuda_mlir import types
+from numba_cuda_mlir._mlir import ir
+from numba_cuda_mlir._mlir.dialects import llvm
+from numba_cuda_mlir.models import PrimitiveModel, register_model
 from numba_cuda_mlir.numba_cuda.extending import typeof_impl
 
 
@@ -52,6 +55,75 @@ class MLIRStringType(types.Type):
 
 
 mlir_string = MLIRStringType()
+
+
+@register_model(MLIRStringType)
+class MLIRStringModel(PrimitiveModel):
+    """Data model for ``mlir_string``: ``{ptr meminfo, ptr data, i64 nbytes}``.
+
+    Field 0 (``meminfo``) is the NRT ``MemInfo`` pointer for lifetime
+    management, field 1 (``data``) points at the raw UTF-8 byte buffer, and
+    field 2 (``nbytes``) is the byte length.
+
+    Parameters
+    ----------
+    dmm : DataModelManager
+        The numba data model manager.
+    fe_type : MLIRStringType
+        The front-end (``mlir_string``) type being modeled.
+    """
+
+    _fields = ("meminfo", "data", "nbytes")
+
+    def __init__(self, dmm, fe_type) -> None:
+        be_type = llvm.StructType.get_literal(
+            [
+                llvm.PointerType.get(),  # meminfo
+                llvm.PointerType.get(),  # data (char*)
+                ir.IntegerType.get_signless(64),  # nbytes
+            ]
+        )
+        super().__init__(dmm, fe_type, be_type)
+
+    def has_nrt_meminfo(self) -> bool:
+        """Whether this type carries an NRT ``MemInfo``.
+
+        Returns
+        -------
+        bool
+            Always ``True`` -- ``mlir_string`` owns its buffer via ``meminfo``.
+        """
+        return True
+
+    def get_nrt_meminfo(self, value):
+        """Extract the NRT ``MemInfo`` pointer (field 0).
+
+        Parameters
+        ----------
+        value : ir.Value
+            An ``mlir_string`` SSA value.
+
+        Returns
+        -------
+        ir.Value
+            The ``meminfo`` pointer.
+        """
+        return llvm.extractvalue(llvm.PointerType.get(), value, [0])
+
+    def get_field_position(self, name):
+        """Index of a named struct field.
+
+        Parameters
+        ----------
+        name : str
+            Field name (``"meminfo"``, ``"data"``, or ``"nbytes"``).
+
+        Returns
+        -------
+        int
+            The field's position within the struct.
+        """
+        return self._fields.index(name)
 
 
 class ManagedStrArrayWrapper:
