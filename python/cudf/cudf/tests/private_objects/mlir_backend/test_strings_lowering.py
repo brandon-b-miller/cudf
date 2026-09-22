@@ -8,6 +8,7 @@ import pytest
 from numba_cuda_mlir import cuda, types
 
 import cudf.core.udf.mlir_backend.strings_lowering  # noqa: F401  registers len
+from cudf.core.udf.api import Masked
 from cudf.core.udf.utils import DEPRECATED_SM_REGEX
 from cudf.core.udf.mlir_backend.strings_typing import (
     ManagedStrArrayWrapper,
@@ -52,7 +53,7 @@ def _make_mlir_string_array(pystrings):
     offset = 0
     for i, e in enumerate(encoded):
         structs[i * 3 + 1] = base + offset  # data
-        structs[i * 3 + 2] = len(e)         # nbytes
+        structs[i * 3 + 2] = len(e)  # nbytes
         offset += len(e)
     structs_dev = cp.asarray(structs)
     wrapper = ManagedStrArrayWrapper(_DeviceBuf(structs_dev))
@@ -65,8 +66,8 @@ def _make_mlir_string_array(pystrings):
         ("", 0),
         ("a", 1),
         ("abc", 3),
-        ("h\u00e9llo", 5),      # é is 2 UTF-8 bytes, 1 char
-        ("\U0001F600x", 2),     # emoji is 4 UTF-8 bytes, 1 char
+        ("h\u00e9llo", 5),  # é is 2 UTF-8 bytes, 1 char
+        ("\U0001f600x", 2),  # emoji is 4 UTF-8 bytes, 1 char
         ("na\u00efve", 5),
     ],
 )
@@ -90,7 +91,7 @@ def test_len_counts_characters(value, expected):
 
 def test_len_over_array():
     """``len`` over a multi-element ``mlir_string`` array, one thread per row."""
-    strings = ["", "a", "abc", "h\u00e9llo", "\U0001F600x"]
+    strings = ["", "a", "abc", "h\u00e9llo", "\U0001f600x"]
     arr, _keep = _make_mlir_string_array(strings)
     out = cp.zeros(len(strings), dtype=np.int64)
 
@@ -107,3 +108,32 @@ def test_len_over_array():
         k[1, len(strings)](out, arr)
     cuda.synchronize()
     assert out.get().tolist() == [len(s) for s in strings]
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_masked_len_propagates_validity(valid):
+    """``len(Masked(mlir_string))`` -> ``Masked(int64)`` carrying validity."""
+    arr, _keep = _make_mlir_string_array(["abc"])
+    out = cp.zeros(1, dtype=np.int64)
+    out_valid = cp.zeros(1, dtype=np.bool_)
+
+    @cuda.jit(
+        types.void(
+            types.int64[::1],
+            types.boolean[::1],
+            types.CPointer(mlir_string),
+            types.boolean[::1],
+        ),
+        extensions=[mlir_string_arg_handler],
+    )
+    def k(o, ov, s, sv):
+        m = len(Masked(s[0], sv[0]))
+        o[0] = m.value
+        ov[0] = m.valid
+
+    with MLIRNumbaCudaConfig():
+        k[1, 1](out, out_valid, arr, cp.array([valid], dtype=np.bool_))
+    cuda.synchronize()
+    # value is computed regardless; validity carries from the operand
+    assert int(out.get()[0]) == 3
+    assert bool(out_valid.get()[0]) is valid
