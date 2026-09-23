@@ -11,8 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from numba_cuda_mlir import types
-from numba_cuda_mlir._mlir.dialects import arith, llvm
-from numba_cuda_mlir._mlir.extras import types as T
+from numba_cuda_mlir._mlir.dialects import llvm
 from numba_cuda_mlir.extending import lowering_registry, typing_registry
 from numba_cuda_mlir.numba_cuda.typing.templates import (
     AbstractTemplate,
@@ -81,8 +80,7 @@ def _lower_len(
 ) -> None:
     """``len(mlir_string)``: count UTF-8 characters, returned as ``int64``."""
     ms_val = builder.load_var(args[0])
-    count_i32 = _impl._lower_len(ms_val)
-    builder.store_var(target, arith.extui(T.i64(), count_i32))
+    builder.store_var(target, _impl._lower_len(ms_val))
 
 
 def _lower_masked_len(
@@ -90,11 +88,16 @@ def _lower_masked_len(
 ) -> None:
     """``len(Masked(mlir_string))``: character count packed with the operand's
     validity bit (``Masked(int64)``).
+
+    The payload is scanned unconditionally; this is safe because null rows carry
+    ``nbytes == 0`` (the marshaller leaves a null ``data`` pointer with zero
+    length), so the count loop never dereferences ``data`` for a null row. The
+    resulting count is discarded anyway when ``m_valid`` is false.
     """
     m = builder.load_var(args[0])
     st = llvm.StructType(m.type)
     ms_val, m_valid = _extract_masked_value_valid(m, st.body[0], st.body[1])
-    count_i64 = arith.extui(T.i64(), _impl._lower_len(ms_val))
+    count_i64 = _impl._lower_len(ms_val)
     target_type = builder.get_numba_type(target.name)
     packed = _pack_masked(builder, target_type, count_i64, m_valid)
     builder.store_var(target, packed)

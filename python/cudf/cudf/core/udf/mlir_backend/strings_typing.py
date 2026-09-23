@@ -4,12 +4,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 from numba_cuda_mlir import types
 from numba_cuda_mlir._mlir import ir
 from numba_cuda_mlir._mlir.dialects import llvm
 from numba_cuda_mlir.models import PrimitiveModel, register_model
 from numba_cuda_mlir.numba_cuda.extending import typeof_impl
+
+if TYPE_CHECKING:
+    from numba_cuda_mlir.numba_cuda.datamodel.manager import DataModelManager
 
 
 class MLIRStringType(types.Type):
@@ -67,15 +72,19 @@ class MLIRStringModel(PrimitiveModel):
 
     Parameters
     ----------
-    dmm : DataModelManager
+    data_model_manager : DataModelManager
         The numba data model manager.
-    fe_type : MLIRStringType
+    string_type : MLIRStringType
         The front-end (``mlir_string``) type being modeled.
     """
 
     _fields = ("meminfo", "data", "nbytes")
 
-    def __init__(self, dmm, fe_type) -> None:
+    def __init__(
+        self,
+        data_model_manager: DataModelManager,
+        string_type: MLIRStringType,
+    ) -> None:
         be_type = llvm.StructType.get_literal(
             [
                 llvm.PointerType.get(),  # meminfo
@@ -83,7 +92,7 @@ class MLIRStringModel(PrimitiveModel):
                 ir.IntegerType.get_signless(64),  # nbytes
             ]
         )
-        super().__init__(dmm, fe_type, be_type)
+        super().__init__(data_model_manager, string_type, be_type)
 
     def has_nrt_meminfo(self) -> bool:
         """Whether this type carries an NRT ``MemInfo``.

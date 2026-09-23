@@ -2,19 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import numpy as np
 import cupy as cp
+import numpy as np
 import pytest
 from numba_cuda_mlir import cuda, types
 
 import cudf.core.udf.mlir_backend.strings_lowering  # noqa: F401  registers len
 from cudf.core.udf.api import Masked
-from cudf.core.udf.utils import DEPRECATED_SM_REGEX
 from cudf.core.udf.mlir_backend.strings_typing import (
     ManagedStrArrayWrapper,
     mlir_string,
     mlir_string_arg_handler,
 )
+from cudf.core.udf.utils import DEPRECATED_SM_REGEX
 
 from .utils import MLIRNumbaCudaConfig
 
@@ -41,17 +41,24 @@ class _DeviceBuf:
 def _make_mlir_string_array(pystrings):
     """Build a device ``mlir_string`` array (borrowed data, null meminfo).
 
+    ``None`` entries produce null rows: a null ``data`` pointer with
+    ``nbytes == 0`` (mirroring how a null string row is marshalled), which the
+    length loop must never dereference.
+
     Returns the ``ManagedStrArrayWrapper`` plus the backing device arrays, which
     must be kept alive for the duration of the kernel launch.
     """
-    encoded = [s.encode("utf-8") for s in pystrings]
-    chars = b"".join(encoded) or b"\x00"
+    encoded = [None if s is None else s.encode("utf-8") for s in pystrings]
+    chars = b"".join(e for e in encoded if e) or b"\x00"
     chars_dev = cp.asarray(np.frombuffer(chars, dtype=np.uint8))
     base = int(chars_dev.data.ptr)
     # struct layout {u64 meminfo, u64 data, i64 nbytes} == 3 x 8 bytes
     structs = np.zeros(len(pystrings) * 3, dtype=np.uint64)
     offset = 0
     for i, e in enumerate(encoded):
+        if e is None:
+            # null row: data==0 (null ptr), nbytes==0 (already zeroed)
+            continue
         structs[i * 3 + 1] = base + offset  # data
         structs[i * 3 + 2] = len(e)  # nbytes
         offset += len(e)
@@ -112,8 +119,14 @@ def test_len_over_array():
 
 @pytest.mark.parametrize("valid", [True, False])
 def test_masked_len_propagates_validity(valid):
-    """``len(Masked(mlir_string))`` -> ``Masked(int64)`` carrying validity."""
-    arr, _keep = _make_mlir_string_array(["abc"])
+    """``len(Masked(mlir_string))`` -> ``Masked(int64)`` carrying validity.
+
+    The ``valid=False`` case uses a genuine null-row payload (null ``data``,
+    ``nbytes == 0``) so the scan is exercised against the null representation,
+    not a stand-in valid payload.
+    """
+    payload = "abc" if valid else None
+    arr, _keep = _make_mlir_string_array([payload])
     out = cp.zeros(1, dtype=np.int64)
     out_valid = cp.zeros(1, dtype=np.bool_)
 
@@ -134,6 +147,48 @@ def test_masked_len_propagates_validity(valid):
     with MLIRNumbaCudaConfig():
         k[1, 1](out, out_valid, arr, cp.array([valid], dtype=np.bool_))
     cuda.synchronize()
-    # value is computed regardless; validity carries from the operand
-    assert int(out.get()[0]) == 3
     assert bool(out_valid.get()[0]) is valid
+    # Payload of an invalid Masked is not an API guarantee; only assert it when
+    # the result is valid.
+    if valid:
+        assert int(out.get()[0]) == 3
+
+
+def test_masked_len_mixed_null_rows():
+    """``len`` over a ``Masked(mlir_string)`` array with interleaved null rows.
+
+    Null rows carry a null ``data`` pointer with ``nbytes == 0``; the kernel
+    must not crash on them and must propagate ``valid=False``.
+    """
+    strings = ["abc", None, "h\u00e9llo", None, ""]
+    valid = [s is not None for s in strings]
+    arr, _keep = _make_mlir_string_array(strings)
+    n = len(strings)
+    out = cp.zeros(n, dtype=np.int64)
+    out_valid = cp.zeros(n, dtype=np.bool_)
+
+    @cuda.jit(
+        types.void(
+            types.int64[::1],
+            types.boolean[::1],
+            types.CPointer(mlir_string),
+            types.boolean[::1],
+        ),
+        extensions=[mlir_string_arg_handler],
+    )
+    def k(o, ov, s, sv):
+        i = cuda.grid(1)
+        if i < o.size:
+            m = len(Masked(s[i], sv[i]))
+            o[i] = m.value
+            ov[i] = m.valid
+
+    with MLIRNumbaCudaConfig():
+        k[1, n](out, out_valid, arr, cp.array(valid, dtype=np.bool_))
+    cuda.synchronize()
+    got_valid = out_valid.get().tolist()
+    got_value = out.get().tolist()
+    assert got_valid == valid
+    for s, v, value in zip(strings, got_valid, got_value, strict=True):
+        if v:
+            assert value == len(s)
