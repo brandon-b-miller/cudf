@@ -8,10 +8,12 @@ Currently only ``len`` (UTF-8 character count). Registered with
 
 from __future__ import annotations
 
+import operator
 from typing import TYPE_CHECKING
 
 from numba_cuda_mlir import types
-from numba_cuda_mlir._mlir.dialects import llvm
+from numba_cuda_mlir._mlir import ir
+from numba_cuda_mlir._mlir.dialects import arith, llvm
 from numba_cuda_mlir.extending import lowering_registry, typing_registry
 from numba_cuda_mlir.numba_cuda.typing.templates import (
     AbstractTemplate,
@@ -33,6 +35,38 @@ from cudf.core.udf.mlir_backend.strings_typing import (
 if TYPE_CHECKING:
     from numba_cuda_mlir.mlir_lowering import MLIRLower
     from numba_cuda_mlir.numba_cuda.core.ir import Var
+
+# Comparison operators -> the arith.cmpi predicate applied to the memcmp-style
+# result (-1/0/1) of a lexicographic byte comparison.
+_CMP_PREDICATES = {
+    operator.eq: arith.CmpIPredicate.eq,
+    operator.ne: arith.CmpIPredicate.ne,
+    operator.lt: arith.CmpIPredicate.slt,
+    operator.le: arith.CmpIPredicate.sle,
+    operator.gt: arith.CmpIPredicate.sgt,
+    operator.ge: arith.CmpIPredicate.sge,
+}
+
+
+def _is_string_operand(ty: types.Type) -> bool:
+    """Whether ``ty`` is an ``mlir_string`` or a compile-time string literal."""
+    return isinstance(ty, (MLIRStringType, types.StringLiteral))
+
+
+def _operand_data_nbytes(
+    builder: MLIRLower, var: Var
+) -> tuple[ir.Value, ir.Value]:
+    """``(data_ptr, nbytes)`` for an ``mlir_string`` or string-literal operand.
+
+    String literals are materialized as UTF-8 device globals so both operand
+    kinds reduce to a raw ``(i8* data, i64 nbytes)`` pair.
+    """
+    nb_ty = builder.get_numba_type(var.name)
+    if isinstance(nb_ty, types.StringLiteral):
+        return _impl._materialize_utf8_literal(
+            builder.mlir_gpu_module, nb_ty.literal_value
+        )
+    return _impl._ms_data_nbytes(builder.load_var(var))
 
 
 class LenMLIRStringTemplate(AbstractTemplate):
@@ -83,6 +117,73 @@ def _lower_len(
     builder.store_var(target, _impl._lower_len(ms_val))
 
 
+class StringComparisonTemplate(AbstractTemplate):
+    """Typing for ``str <cmp> str`` -> ``boolean``.
+
+    Registered for ``==``/``!=``/``<``/``<=``/``>``/``>=``; accepts any pair of
+    ``mlir_string``/string-literal operands where at least one is an
+    ``mlir_string`` (two literals are constant-folded by the compiler).
+    """
+
+    def generic(
+        self, args: tuple[types.Type, ...], kws: dict
+    ) -> Signature | None:
+        """Resolve a string comparison signature.
+
+        Parameters
+        ----------
+        args : tuple of types.Type
+            Positional argument types.
+        kws : dict
+            Keyword argument types (must be empty).
+
+        Returns
+        -------
+        Signature or None
+            ``boolean(a, b)`` for a valid string operand pair, else ``None``.
+        """
+        if len(args) != 2 or kws:
+            return None
+        a, b = args
+        if (
+            _is_string_operand(a)
+            and _is_string_operand(b)
+            and (
+                isinstance(a, MLIRStringType) or isinstance(b, MLIRStringType)
+            )
+        ):
+            return nb_signature(types.boolean, a, b)
+        return None
+
+
+def _make_lower_comparison(
+    predicate: arith.CmpIPredicate,
+) -> object:
+    """Build a lowering for a string comparison with the given ``cmpi`` predicate.
+
+    Parameters
+    ----------
+    predicate : arith.CmpIPredicate
+        Predicate applied to the ``memcmp``-style result against zero.
+
+    Returns
+    -------
+    callable
+        A lowering ``(builder, target, args, kwargs) -> None``.
+    """
+
+    def _lower(
+        builder: MLIRLower, target: Var, args: list[Var], kwargs: list
+    ) -> None:
+        a_data, a_nbytes = _operand_data_nbytes(builder, args[0])
+        b_data, b_nbytes = _operand_data_nbytes(builder, args[1])
+        cmp = _impl._lower_bytes_compare(a_data, a_nbytes, b_data, b_nbytes)
+        zero = arith.constant(ir.IntegerType.get_signless(32), 0)
+        builder.store_var(target, arith.cmpi(predicate, cmp, zero))
+
+    return _lower
+
+
 def _lower_masked_len(
     builder: MLIRLower, target: Var, args: list[Var], kwargs: list
 ) -> None:
@@ -104,10 +205,21 @@ def _lower_masked_len(
 
 
 def _register() -> None:
-    """Register ``len`` typing and lowering with ``numba_cuda_mlir``."""
+    """Register ``mlir_string`` op typing and lowering with ``numba_cuda_mlir``."""
     typing_registry.register_global(len)(LenMLIRStringTemplate)
     lowering_registry.lower(len, mlir_string)(_lower_len)
     lowering_registry.lower(len, MaskedType)(_lower_masked_len)
+
+    # Comparisons: str <cmp> str -> boolean, over mlir_string / string literals.
+    for cmp_op, predicate in _CMP_PREDICATES.items():
+        typing_registry.register_global(cmp_op)(StringComparisonTemplate)
+        lower_cmp = _make_lower_comparison(predicate)
+        for lhs_ty, rhs_ty in (
+            (MLIRStringType, MLIRStringType),
+            (MLIRStringType, types.StringLiteral),
+            (types.StringLiteral, MLIRStringType),
+        ):
+            lowering_registry.lower(cmp_op, lhs_ty, rhs_ty)(lower_cmp)
 
 
 _register()
