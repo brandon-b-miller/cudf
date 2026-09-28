@@ -34,13 +34,16 @@ if TYPE_CHECKING:
     from numba_cuda_mlir.mlir_lowering import MLIRLower
     from numba_cuda_mlir.numba_cuda.core.ir import Var
 
+# libcudf size_type; the width of a string length result.
+size_type = types.int32
+
 
 class LenMLIRStringTemplate(AbstractTemplate):
     """``len`` over strings.
 
-    ``len(mlir_string)`` -> ``int64`` (UTF-8 character count), and
-    ``len(Masked(mlir_string))`` -> ``Masked(int64)`` (validity carried from the
-    operand).
+    ``len(mlir_string)`` -> ``int32`` (UTF-8 character count), and
+    ``len(Masked(mlir_string))`` -> ``Masked(int32)`` (validity carried from the
+    operand). ``int32`` matches libcudf's ``size_type`` for string lengths.
     """
 
     key = len
@@ -60,34 +63,34 @@ class LenMLIRStringTemplate(AbstractTemplate):
         Returns
         -------
         Signature or None
-            ``int64`` for a bare ``mlir_string``, ``Masked(int64)`` for a
+            ``int32`` for a bare ``mlir_string``, ``Masked(int32)`` for a
             ``Masked(mlir_string)``, else ``None``.
         """
         if len(args) != 1 or kws:
             return None
         arg = args[0]
         if isinstance(arg, MLIRStringType):
-            return nb_signature(types.int64, mlir_string)
+            return nb_signature(size_type, mlir_string)
         if isinstance(arg, MaskedType) and isinstance(
             arg.value_type, MLIRStringType
         ):
-            return nb_signature(MaskedType(types.int64), arg)
+            return nb_signature(MaskedType(size_type), arg)
         return None
 
 
 def _lower_len(
     builder: MLIRLower, target: Var, args: list[Var], kwargs: list
 ) -> None:
-    """``len(mlir_string)``: count UTF-8 characters, returned as ``int64``."""
-    ms_val = builder.load_var(args[0])
-    builder.store_var(target, _impl._lower_len(ms_val))
+    """``len(mlir_string)``: count UTF-8 characters, returned as ``int32``."""
+    view = _impl._mlir_string_to_view(builder.load_var(args[0]))
+    builder.store_var(target, _impl._lower_len(view))
 
 
 def _lower_masked_len(
     builder: MLIRLower, target: Var, args: list[Var], kwargs: list
 ) -> None:
     """``len(Masked(mlir_string))``: character count packed with the operand's
-    validity bit (``Masked(int64)``).
+    validity bit (``Masked(int32)``).
 
     The payload is scanned unconditionally; this is safe because null rows carry
     ``nbytes == 0`` (the marshaller leaves a null ``data`` pointer with zero
@@ -97,9 +100,9 @@ def _lower_masked_len(
     m = builder.load_var(args[0])
     st = llvm.StructType(m.type)
     ms_val, m_valid = _extract_masked_value_valid(m, st.body[0], st.body[1])
-    count_i64 = _impl._lower_len(ms_val)
+    count = _impl._lower_len(_impl._mlir_string_to_view(ms_val))
     target_type = builder.get_numba_type(target.name)
-    packed = _pack_masked(builder, target_type, count_i64, m_valid)
+    packed = _pack_masked(builder, target_type, count, m_valid)
     builder.store_var(target, packed)
 
 
