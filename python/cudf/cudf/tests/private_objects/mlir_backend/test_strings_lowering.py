@@ -264,3 +264,177 @@ def test_string_comparison_literal(op):
     cuda.synchronize()
     assert out.get().tolist() == [op(s, "foo") for s in strings]
     assert out_r.get().tolist() == [op("foo", s) for s in strings]
+
+
+def test_string_affix_and_contains():
+    """``startswith`` / ``endswith`` / ``in`` against a literal, over an array."""
+    strings = ["abc", "abcd", "xabc", "ab", "", "cab"]
+    arr, _k = _make_mlir_string_array(strings)
+    n = len(strings)
+    starts = cp.zeros(n, dtype=np.bool_)
+    ends = cp.zeros(n, dtype=np.bool_)
+    has = cp.zeros(n, dtype=np.bool_)
+
+    @cuda.jit(
+        types.void(
+            types.boolean[::1],
+            types.boolean[::1],
+            types.boolean[::1],
+            types.CPointer(mlir_string),
+        ),
+        extensions=[mlir_string_arg_handler],
+    )
+    def k(so, eo, ho, s):
+        i = cuda.grid(1)
+        if i < so.size:
+            so[i] = s[i].startswith("ab")
+            eo[i] = s[i].endswith("bc")
+            ho[i] = "ab" in s[i]
+
+    with MLIRNumbaCudaConfig():
+        k[1, n](starts, ends, has, arr)
+    cuda.synchronize()
+    assert starts.get().tolist() == [s.startswith("ab") for s in strings]
+    assert ends.get().tolist() == [s.endswith("bc") for s in strings]
+    assert has.get().tolist() == ["ab" in s for s in strings]
+
+
+def test_string_search():
+    """``find`` / ``rfind`` / ``count`` against a literal, over an array."""
+    strings = ["hello", "world", "abc", "lll", "", "l"]
+    arr, _k = _make_mlir_string_array(strings)
+    n = len(strings)
+    finds = cp.zeros(n, dtype=np.int32)
+    rfinds = cp.zeros(n, dtype=np.int32)
+    counts = cp.zeros(n, dtype=np.int32)
+
+    @cuda.jit(
+        types.void(
+            types.int32[::1],
+            types.int32[::1],
+            types.int32[::1],
+            types.CPointer(mlir_string),
+        ),
+        extensions=[mlir_string_arg_handler],
+    )
+    def k(fo, ro, co, s):
+        i = cuda.grid(1)
+        if i < fo.size:
+            fo[i] = s[i].find("l")
+            ro[i] = s[i].rfind("l")
+            co[i] = s[i].count("l")
+
+    with MLIRNumbaCudaConfig():
+        k[1, n](finds, rfinds, counts, arr)
+    cuda.synchronize()
+    assert finds.get().tolist() == [s.find("l") for s in strings]
+    assert rfinds.get().tolist() == [s.rfind("l") for s in strings]
+    assert counts.get().tolist() == [s.count("l") for s in strings]
+
+
+def test_string_find_multibyte_char_position():
+    """``find`` returns a character (not byte) position for multibyte input."""
+    strings = ["h\u00e9llo", "\U0001f600x!"]  # é is 2 bytes; emoji is 4 bytes
+    arr, _k = _make_mlir_string_array(strings)
+    n = len(strings)
+    out = cp.zeros(n, dtype=np.int32)
+
+    @cuda.jit(
+        types.void(types.int32[::1], types.CPointer(mlir_string)),
+        extensions=[mlir_string_arg_handler],
+    )
+    def k(o, s):
+        i = cuda.grid(1)
+        if i < o.size:
+            o[i] = s[i].find("!")
+
+    with MLIRNumbaCudaConfig():
+        k[1, n](out, arr)
+    cuda.synchronize()
+    # "héllo".find("!") == -1 ; "\U0001f600x!".find("!") == 2 (char position)
+    assert out.get().tolist() == [s.find("!") for s in strings]
+
+
+_IS_PREDICATES = [
+    "isalpha",
+    "isalnum",
+    "isdecimal",
+    "isdigit",
+    "isupper",
+    "islower",
+    "isspace",
+    "isnumeric",
+    "istitle",
+]
+
+
+def test_string_is_predicates():
+    """Character-class predicates match Python's ``str`` methods for ASCII.
+
+    A single kernel computes all nine predicates into separate columns (numba
+    can't take the method name dynamically), each compared to the ``str`` oracle.
+    """
+    strings = [
+        "abc",
+        "ABC",
+        "Abc",
+        "abc123",
+        "123",
+        "  ",
+        "a b",
+        "",
+        "Hello World",
+        "hello world",
+        "3.14",
+        "ABC123",
+    ]
+    arr, _k = _make_mlir_string_array(strings)
+    n = len(strings)
+    outs = {name: cp.zeros(n, dtype=np.bool_) for name in _IS_PREDICATES}
+
+    @cuda.jit(
+        types.void(
+            types.boolean[::1],  # isalpha
+            types.boolean[::1],  # isalnum
+            types.boolean[::1],  # isdecimal
+            types.boolean[::1],  # isdigit
+            types.boolean[::1],  # isupper
+            types.boolean[::1],  # islower
+            types.boolean[::1],  # isspace
+            types.boolean[::1],  # isnumeric
+            types.boolean[::1],  # istitle
+            types.CPointer(mlir_string),
+        ),
+        extensions=[mlir_string_arg_handler],
+    )
+    def k(o_alpha, o_alnum, o_dec, o_dig, o_up, o_low, o_sp, o_num, o_tit, s):
+        i = cuda.grid(1)
+        if i < o_alpha.size:
+            e = s[i]
+            o_alpha[i] = e.isalpha()
+            o_alnum[i] = e.isalnum()
+            o_dec[i] = e.isdecimal()
+            o_dig[i] = e.isdigit()
+            o_up[i] = e.isupper()
+            o_low[i] = e.islower()
+            o_sp[i] = e.isspace()
+            o_num[i] = e.isnumeric()
+            o_tit[i] = e.istitle()
+
+    with MLIRNumbaCudaConfig():
+        k[1, n](
+            outs["isalpha"],
+            outs["isalnum"],
+            outs["isdecimal"],
+            outs["isdigit"],
+            outs["isupper"],
+            outs["islower"],
+            outs["isspace"],
+            outs["isnumeric"],
+            outs["istitle"],
+            arr,
+        )
+    cuda.synchronize()
+    for name in _IS_PREDICATES:
+        expected = [getattr(s, name)() for s in strings]
+        assert outs[name].get().tolist() == expected, name
