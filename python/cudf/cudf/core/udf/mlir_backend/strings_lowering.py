@@ -31,7 +31,8 @@ from numba_cuda_mlir.numba_cuda.typing.templates import (
 )
 from numba_cuda_mlir.typing import signature as nb_signature
 
-from cudf._lib.strings_udf import get_character_flags_table_ptr
+from pylibcudf.strings.char_types import get_character_flags_table_ptr
+
 from cudf.core.udf.mlir_backend import string_lowering_impl as _impl
 from cudf.core.udf.mlir_backend.masked_lowering import (
     _extract_masked_value_valid,
