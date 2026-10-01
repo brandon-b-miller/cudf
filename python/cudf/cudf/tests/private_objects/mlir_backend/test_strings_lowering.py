@@ -232,13 +232,14 @@ def test_string_comparison_arrays(op):
     with MLIRNumbaCudaConfig():
         k[1, n](out, la, ra)
     cuda.synchronize()
-    expected = [op(x, y) for x, y in zip(left, right, strict=True)]
-    assert out.get().tolist() == expected
+    assert out.get().tolist() == [
+        op(x, y) for x, y in zip(left, right, strict=True)
+    ]
 
 
 @pytest.mark.parametrize("op", _CMP_OPS)
 def test_string_comparison_literal(op):
-    """``str <cmp> "literal"`` (and the reflected form) over an array."""
+    """``str <cmp> "literal"`` and the reflected form over an array."""
     strings = ["foo", "fop", "fon", "fo", "foobar", ""]
     arr, _k = _make_mlir_string_array(strings)
     n = len(strings)
@@ -266,216 +267,23 @@ def test_string_comparison_literal(op):
     assert out_r.get().tolist() == [op("foo", s) for s in strings]
 
 
-def test_string_affix_and_contains():
-    """``startswith`` / ``endswith`` / ``in`` against a literal, over an array."""
-    strings = ["abc", "abcd", "xabc", "ab", "", "cab"]
-    arr, _k = _make_mlir_string_array(strings)
-    n = len(strings)
-    starts = cp.zeros(n, dtype=np.bool_)
-    ends = cp.zeros(n, dtype=np.bool_)
-    has = cp.zeros(n, dtype=np.bool_)
+def test_masked_string_comparison_propagates_validity():
+    """``Masked(str) == Masked(str)`` -> ``Masked(bool)``; valid iff both valid.
 
-    @cuda.jit(
-        types.void(
-            types.boolean[::1],
-            types.boolean[::1],
-            types.boolean[::1],
-            types.CPointer(mlir_string),
-        ),
-        extensions=[mlir_string_arg_handler],
-    )
-    def k(so, eo, ho, s):
-        i = cuda.grid(1)
-        if i < so.size:
-            so[i] = s[i].startswith("ab")
-            eo[i] = s[i].endswith("bc")
-            ho[i] = "ab" in s[i]
-
-    with MLIRNumbaCudaConfig():
-        k[1, n](starts, ends, has, arr)
-    cuda.synchronize()
-    assert starts.get().tolist() == [s.startswith("ab") for s in strings]
-    assert ends.get().tolist() == [s.endswith("bc") for s in strings]
-    assert has.get().tolist() == ["ab" in s for s in strings]
-
-
-def test_string_search():
-    """``find`` / ``rfind`` / ``count`` against a literal, over an array."""
-    strings = ["hello", "world", "abc", "lll", "", "l"]
-    arr, _k = _make_mlir_string_array(strings)
-    n = len(strings)
-    finds = cp.zeros(n, dtype=np.int32)
-    rfinds = cp.zeros(n, dtype=np.int32)
-    counts = cp.zeros(n, dtype=np.int32)
-
-    @cuda.jit(
-        types.void(
-            types.int32[::1],
-            types.int32[::1],
-            types.int32[::1],
-            types.CPointer(mlir_string),
-        ),
-        extensions=[mlir_string_arg_handler],
-    )
-    def k(fo, ro, co, s):
-        i = cuda.grid(1)
-        if i < fo.size:
-            fo[i] = s[i].find("l")
-            ro[i] = s[i].rfind("l")
-            co[i] = s[i].count("l")
-
-    with MLIRNumbaCudaConfig():
-        k[1, n](finds, rfinds, counts, arr)
-    cuda.synchronize()
-    assert finds.get().tolist() == [s.find("l") for s in strings]
-    assert rfinds.get().tolist() == [s.rfind("l") for s in strings]
-    assert counts.get().tolist() == [s.count("l") for s in strings]
-
-
-def test_string_find_multibyte_char_position():
-    """``find`` returns a character (not byte) position for multibyte input."""
-    strings = ["h\u00e9llo", "\U0001f600x!"]  # é is 2 bytes; emoji is 4 bytes
-    arr, _k = _make_mlir_string_array(strings)
-    n = len(strings)
-    out = cp.zeros(n, dtype=np.int32)
-
-    @cuda.jit(
-        types.void(types.int32[::1], types.CPointer(mlir_string)),
-        extensions=[mlir_string_arg_handler],
-    )
-    def k(o, s):
-        i = cuda.grid(1)
-        if i < o.size:
-            o[i] = s[i].find("!")
-
-    with MLIRNumbaCudaConfig():
-        k[1, n](out, arr)
-    cuda.synchronize()
-    # "héllo".find("!") == -1 ; "\U0001f600x!".find("!") == 2 (char position)
-    assert out.get().tolist() == [s.find("!") for s in strings]
-
-
-_IS_PREDICATES = [
-    "isalpha",
-    "isalnum",
-    "isdecimal",
-    "isdigit",
-    "isupper",
-    "islower",
-    "isspace",
-    "isnumeric",
-    "istitle",
-]
-
-
-def test_string_is_predicates():
-    """Character-class predicates match Python's ``str`` methods for ASCII.
-
-    A single kernel computes all nine predicates into separate columns (numba
-    can't take the method name dynamically), each compared to the ``str`` oracle.
+    The result value is only asserted on rows whose result is valid.
     """
-    strings = [
-        "abc",
-        "ABC",
-        "Abc",
-        "abc123",
-        "123",
-        "  ",
-        "a b",
-        "",
-        "Hello World",
-        "hello world",
-        "3.14",
-        "ABC123",
-    ]
-    arr, _k = _make_mlir_string_array(strings)
-    n = len(strings)
-    outs = {name: cp.zeros(n, dtype=np.bool_) for name in _IS_PREDICATES}
-
-    @cuda.jit(
-        types.void(
-            types.boolean[::1],  # isalpha
-            types.boolean[::1],  # isalnum
-            types.boolean[::1],  # isdecimal
-            types.boolean[::1],  # isdigit
-            types.boolean[::1],  # isupper
-            types.boolean[::1],  # islower
-            types.boolean[::1],  # isspace
-            types.boolean[::1],  # isnumeric
-            types.boolean[::1],  # istitle
-            types.CPointer(mlir_string),
-        ),
-        extensions=[mlir_string_arg_handler],
-    )
-    def k(o_alpha, o_alnum, o_dec, o_dig, o_up, o_low, o_sp, o_num, o_tit, s):
-        i = cuda.grid(1)
-        if i < o_alpha.size:
-            e = s[i]
-            o_alpha[i] = e.isalpha()
-            o_alnum[i] = e.isalnum()
-            o_dec[i] = e.isdecimal()
-            o_dig[i] = e.isdigit()
-            o_up[i] = e.isupper()
-            o_low[i] = e.islower()
-            o_sp[i] = e.isspace()
-            o_num[i] = e.isnumeric()
-            o_tit[i] = e.istitle()
-
-    with MLIRNumbaCudaConfig():
-        k[1, n](
-            outs["isalpha"],
-            outs["isalnum"],
-            outs["isdecimal"],
-            outs["isdigit"],
-            outs["isupper"],
-            outs["islower"],
-            outs["isspace"],
-            outs["isnumeric"],
-            outs["istitle"],
-            arr,
-        )
-    cuda.synchronize()
-    for name in _IS_PREDICATES:
-        expected = [getattr(s, name)() for s in strings]
-        assert outs[name].get().tolist() == expected, name
-
-
-def test_masked_string_ops_propagate_validity():
-    """Masked-string comparison / contains / methods carry a validity bit.
-
-    A comparison over two masked operands is valid iff both are valid; a method
-    or contains against a literal is valid iff the masked receiver is valid.
-    Values are only asserted on rows whose result is valid.
-    """
-    a = ["abc", "abd", "xyz", "ab", "ABC"]
-    av = [True, False, True, True, True]
-    b = ["abc", "abd", "xyw", "abc", "ABC"]
-    bv = [True, True, False, True, True]
+    a = ["abc", "abd", "xyz", "ab"]
+    av = [True, False, True, True]
+    b = ["abc", "abd", "xyw", "abc"]
+    bv = [True, True, False, True]
     arr_a, _ka = _make_mlir_string_array(a)
     arr_b, _kb = _make_mlir_string_array(b)
     n = len(a)
-
-    eqv = cp.zeros(n, dtype=np.bool_)
-    eqk = cp.zeros(n, dtype=np.bool_)
-    swv = cp.zeros(n, dtype=np.bool_)
-    swk = cp.zeros(n, dtype=np.bool_)
-    fiv = cp.zeros(n, dtype=np.int32)
-    fik = cp.zeros(n, dtype=np.bool_)
-    iav = cp.zeros(n, dtype=np.bool_)
-    iak = cp.zeros(n, dtype=np.bool_)
-    cov = cp.zeros(n, dtype=np.bool_)
-    cok = cp.zeros(n, dtype=np.bool_)
+    out = cp.zeros(n, dtype=np.bool_)
+    out_valid = cp.zeros(n, dtype=np.bool_)
 
     @cuda.jit(
         types.void(
-            types.boolean[::1],
-            types.boolean[::1],
-            types.boolean[::1],
-            types.boolean[::1],
-            types.int32[::1],
-            types.boolean[::1],
-            types.boolean[::1],
-            types.boolean[::1],
             types.boolean[::1],
             types.boolean[::1],
             types.CPointer(mlir_string),
@@ -485,61 +293,25 @@ def test_masked_string_ops_propagate_validity():
         ),
         extensions=[mlir_string_arg_handler],
     )
-    def k(eqv, eqk, swv, swk, fiv, fik, iav, iak, cov, cok, sa, sav, sb, sbv):
+    def k(o, ov, sa, sav, sb, sbv):
         i = cuda.grid(1)
-        if i < eqv.size:
-            ma = Masked(sa[i], sav[i])
-            mb = Masked(sb[i], sbv[i])
-            r_eq = ma == mb
-            eqv[i] = r_eq.value
-            eqk[i] = r_eq.valid
-            r_sw = ma.startswith("ab")
-            swv[i] = r_sw.value
-            swk[i] = r_sw.valid
-            r_fi = ma.find("b")
-            fiv[i] = r_fi.value
-            fik[i] = r_fi.valid
-            r_ia = ma.isalpha()
-            iav[i] = r_ia.value
-            iak[i] = r_ia.valid
-            r_co = "ab" in ma
-            cov[i] = r_co.value
-            cok[i] = r_co.valid
+        if i < o.size:
+            r = Masked(sa[i], sav[i]) == Masked(sb[i], sbv[i])
+            o[i] = r.value
+            ov[i] = r.valid
 
     with MLIRNumbaCudaConfig():
         k[1, n](
-            eqv,
-            eqk,
-            swv,
-            swk,
-            fiv,
-            fik,
-            iav,
-            iak,
-            cov,
-            cok,
+            out,
+            out_valid,
             arr_a,
             cp.array(av, dtype=np.bool_),
             arr_b,
             cp.array(bv, dtype=np.bool_),
         )
     cuda.synchronize()
-
-    # comparison: valid iff both operands valid
-    eq_ok = eqk.get().tolist()
-    assert eq_ok == [x and y for x, y in zip(av, bv, strict=True)]
+    got_valid = out_valid.get().tolist()
+    assert got_valid == [x and y for x, y in zip(av, bv, strict=True)]
     for i in range(n):
-        if eq_ok[i]:
-            assert bool(eqv.get()[i]) is (a[i] == b[i])
-
-    # method / contains vs literal: valid iff the receiver is valid
-    assert swk.get().tolist() == av
-    assert fik.get().tolist() == av
-    assert iak.get().tolist() == av
-    assert cok.get().tolist() == av
-    for i in range(n):
-        if av[i]:
-            assert bool(swv.get()[i]) is a[i].startswith("ab")
-            assert int(fiv.get()[i]) == a[i].find("b")
-            assert bool(iav.get()[i]) is a[i].isalpha()
-            assert bool(cov.get()[i]) is ("ab" in a[i])
+        if got_valid[i]:
+            assert bool(out.get()[i]) is (a[i] == b[i])

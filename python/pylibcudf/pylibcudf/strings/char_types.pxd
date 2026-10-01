@@ -23,5 +23,3 @@ cpdef Column filter_characters_of_type(
     object stream = *,
     DeviceMemoryResource mr=*
 )
-
-cpdef get_character_flags_table_ptr()
