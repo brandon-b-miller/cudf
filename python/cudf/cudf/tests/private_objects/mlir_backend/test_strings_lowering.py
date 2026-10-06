@@ -205,14 +205,33 @@ _CMP_OPS = [
     operator.ge,
 ]
 
+# Comparison operands are independent of the operator under test, so build the
+# device ``mlir_string`` arrays once per module and reuse across parametrizations.
+_CMP_LEFT = ["abc", "abc", "abd", "ab", "abcd", "", "h\u00e9llo"]
+_CMP_RIGHT = ["abc", "abd", "abc", "abc", "abc", "", "h\u00e9llo"]
+_CMP_LITERAL_STRINGS = ["foo", "fop", "fon", "fo", "foobar", ""]
+
+
+@pytest.fixture(scope="module")
+def cmp_array_operands():
+    """``(left, right, left_arr, right_arr)`` for element-wise comparisons."""
+    la, keep_l = _make_mlir_string_array(_CMP_LEFT)
+    ra, keep_r = _make_mlir_string_array(_CMP_RIGHT)
+    # keep_l/keep_r must outlive the kernel launches that read the arrays.
+    yield _CMP_LEFT, _CMP_RIGHT, la, ra, (keep_l, keep_r)
+
+
+@pytest.fixture(scope="module")
+def cmp_literal_operand():
+    """``(strings, arr)`` for comparisons against a string literal."""
+    arr, keep = _make_mlir_string_array(_CMP_LITERAL_STRINGS)
+    yield _CMP_LITERAL_STRINGS, arr, keep
+
 
 @pytest.mark.parametrize("op", _CMP_OPS)
-def test_string_comparison_arrays(op):
+def test_string_comparison_arrays(op, cmp_array_operands):
     """``str <cmp> str`` element-wise over two ``mlir_string`` arrays."""
-    left = ["abc", "abc", "abd", "ab", "abcd", "", "h\u00e9llo"]
-    right = ["abc", "abd", "abc", "abc", "abc", "", "h\u00e9llo"]
-    la, _k1 = _make_mlir_string_array(left)
-    ra, _k2 = _make_mlir_string_array(right)
+    left, right, la, ra, _keep = cmp_array_operands
     n = len(left)
     out = cp.zeros(n, dtype=np.bool_)
 
@@ -238,10 +257,9 @@ def test_string_comparison_arrays(op):
 
 
 @pytest.mark.parametrize("op", _CMP_OPS)
-def test_string_comparison_literal(op):
+def test_string_comparison_literal(op, cmp_literal_operand):
     """``str <cmp> "literal"`` and the reflected form over an array."""
-    strings = ["foo", "fop", "fon", "fo", "foobar", ""]
-    arr, _k = _make_mlir_string_array(strings)
+    strings, arr, _keep = cmp_literal_operand
     n = len(strings)
     out = cp.zeros(n, dtype=np.bool_)
     out_r = cp.zeros(n, dtype=np.bool_)
@@ -265,6 +283,40 @@ def test_string_comparison_literal(op):
     cuda.synchronize()
     assert out.get().tolist() == [op(s, "foo") for s in strings]
     assert out_r.get().tolist() == [op("foo", s) for s in strings]
+
+
+def test_masked_string_comparison_literal():
+    """``Masked(str) == literal`` -> ``Masked(bool)``, validity from the operand."""
+    strings = ["foo", "bar", "foo"]
+    valid = [True, False, True]
+    arr, _k = _make_mlir_string_array(strings)
+    n = len(strings)
+    out = cp.zeros(n, dtype=np.bool_)
+    out_valid = cp.zeros(n, dtype=np.bool_)
+
+    @cuda.jit(
+        types.void(
+            types.boolean[::1],
+            types.boolean[::1],
+            types.CPointer(mlir_string),
+            types.boolean[::1],
+        ),
+        extensions=[mlir_string_arg_handler],
+    )
+    def k(o, ov, s, sv):
+        i = cuda.grid(1)
+        if i < o.size:
+            r = Masked(s[i], sv[i]) == "foo"
+            o[i] = r.value
+            ov[i] = r.valid
+
+    with MLIRNumbaCudaConfig():
+        k[1, n](out, out_valid, arr, cp.array(valid, dtype=np.bool_))
+    cuda.synchronize()
+    assert out_valid.get().tolist() == valid
+    for i in range(n):
+        if valid[i]:
+            assert bool(out.get()[i]) is (strings[i] == "foo")
 
 
 def test_masked_string_comparison_propagates_validity():

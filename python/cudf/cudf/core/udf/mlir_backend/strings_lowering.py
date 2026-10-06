@@ -190,17 +190,23 @@ def _lower_masked_len(
 
 
 def _literal_to_view(builder: MLIRLower, literal_var: Var) -> ir.Value:
-    """Materialize a ``StringLiteral`` var as a view ``{ptr, i32 nbytes, i32 len}``."""
+    """Materialize a ``StringLiteral`` as a view ``{ptr, i32 nbytes, i32 len}``.
+
+    ``builder.load_var`` returns a pointer to the literal's compile-time byte
+    buffer. Only ASCII literals are currently supported: for ASCII that buffer is
+    byte-identical to UTF-8, so it compares correctly against ``mlir_string``
+    (which stores UTF-8). Non-ASCII string literals are presently rejected
+    upstream by numba-cuda-mlir's string-constant materialization, so no explicit
+    guard is added here.
+    """
     literal_value = builder.get_numba_type(literal_var.name).literal_value
-    data_struct = builder.load_var(literal_var)
+    data_ptr = builder.load_var(literal_var)
     ptr_ty = llvm.PointerType.get()
     i32 = ir.IntegerType.get_signless(32)
     view_ty = llvm.StructType.get_literal([ptr_ty, i32, i32])
     val = llvm.UndefOp(view_ty)
     val = llvm.insertvalue(
-        container=val,
-        value=llvm.extractvalue(ptr_ty, data_struct, [0]),
-        position=ir.DenseI64ArrayAttr.get([0]),
+        container=val, value=data_ptr, position=ir.DenseI64ArrayAttr.get([0])
     )
     val = llvm.insertvalue(
         container=val,
