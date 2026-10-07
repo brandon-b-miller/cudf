@@ -367,3 +367,66 @@ def test_masked_string_comparison_propagates_validity():
     for i in range(n):
         if got_valid[i]:
             assert bool(out.get()[i]) is (a[i] == b[i])
+
+
+def test_string_affix():
+    """``startswith`` / ``endswith`` against a literal, over an array."""
+    strings = ["abc", "abcd", "xabc", "ab", "", "cab", "h\u00e9llo"]
+    arr, _k = _make_mlir_string_array(strings)
+    n = len(strings)
+    starts = cp.zeros(n, dtype=np.bool_)
+    ends = cp.zeros(n, dtype=np.bool_)
+
+    @cuda.jit(
+        types.void(
+            types.boolean[::1],
+            types.boolean[::1],
+            types.CPointer(mlir_string),
+        ),
+        extensions=[mlir_string_arg_handler],
+    )
+    def k(so, eo, s):
+        i = cuda.grid(1)
+        if i < so.size:
+            so[i] = s[i].startswith("ab")
+            eo[i] = s[i].endswith("bc")
+
+    with MLIRNumbaCudaConfig():
+        k[1, n](starts, ends, arr)
+    cuda.synchronize()
+    assert starts.get().tolist() == [s.startswith("ab") for s in strings]
+    assert ends.get().tolist() == [s.endswith("bc") for s in strings]
+
+
+def test_masked_string_affix_propagates_validity():
+    """``Masked(str).startswith(literal)`` -> ``Masked(bool)``; validity carried."""
+    strings = ["abc", "abd", "xyz"]
+    valid = [True, False, True]
+    arr, _k = _make_mlir_string_array(strings)
+    n = len(strings)
+    out = cp.zeros(n, dtype=np.bool_)
+    out_valid = cp.zeros(n, dtype=np.bool_)
+
+    @cuda.jit(
+        types.void(
+            types.boolean[::1],
+            types.boolean[::1],
+            types.CPointer(mlir_string),
+            types.boolean[::1],
+        ),
+        extensions=[mlir_string_arg_handler],
+    )
+    def k(o, ov, s, sv):
+        i = cuda.grid(1)
+        if i < o.size:
+            r = Masked(s[i], sv[i]).startswith("ab")
+            o[i] = r.value
+            ov[i] = r.valid
+
+    with MLIRNumbaCudaConfig():
+        k[1, n](out, out_valid, arr, cp.array(valid, dtype=np.bool_))
+    cuda.synchronize()
+    assert out_valid.get().tolist() == valid
+    for i in range(n):
+        if valid[i]:
+            assert bool(out.get()[i]) is strings[i].startswith("ab")
