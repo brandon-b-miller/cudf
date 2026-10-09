@@ -237,9 +237,33 @@ class MaskedMLIRStringAttrs(AttributeTemplate):
     key = _masked_string
 
     def resolve_value(self, typ: MaskedType) -> types.Type:
+        """Resolve ``Masked(mlir_string).value``.
+
+        Parameters
+        ----------
+        typ : MaskedType
+            The ``Masked(mlir_string)`` receiver type.
+
+        Returns
+        -------
+        types.Type
+            The wrapped value type (``mlir_string``).
+        """
         return typ.value_type
 
     def resolve_valid(self, typ: MaskedType) -> types.Type:
+        """Resolve ``Masked(mlir_string).valid``.
+
+        Parameters
+        ----------
+        typ : MaskedType
+            The ``Masked(mlir_string)`` receiver type.
+
+        Returns
+        -------
+        types.Type
+            ``boolean``.
+        """
         return types.boolean
 
 
