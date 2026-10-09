@@ -188,15 +188,26 @@ def _make_method_attr(
     callable
         A ``resolve_`` function for the attribute template.
     """
-    result_ty = MaskedType(retty) if masked else retty
     recvr = _masked_string if masked else mlir_string
 
     class _MethodTemplate(AbstractTemplate):
         key = f"MLIRString.{attrname}.{'m' if masked else 's'}"
 
         def generic(self, args, kws):
-            """Resolve ``s.<method>(other)`` for a string ``other``."""
-            if len(args) == 1 and not kws and _is_string_arg(args[0]):
+            """Resolve ``s.<method>(other)`` for a string ``other``.
+
+            The result is ``Masked`` when *either* the receiver or the argument
+            is masked, so an invalid argument never yields a valid plain result.
+            The argument's string-ness is not gated here: a ``StringLiteral``
+            argument isn't recognized by ``isinstance`` inside a ``BoundFunction``
+            template, and the lowering handles the operand kinds.
+            """
+            if len(args) == 1 and not kws:
+                result_ty = (
+                    MaskedType(retty)
+                    if masked or _is_masked_string(args[0])
+                    else retty
+                )
                 return nb_signature(result_ty, args[0], recvr=self.this)
             return None
 
@@ -215,9 +226,21 @@ class MLIRStringAttrs(AttributeTemplate):
 
 @typing_registry.register_attr
 class MaskedMLIRStringAttrs(AttributeTemplate):
-    """Attribute typing for ``Masked(mlir_string)`` methods."""
+    """Attribute typing for ``Masked(mlir_string)``.
+
+    An instance-keyed attribute template shadows the class-keyed
+    :class:`MaskedTypeAttrs`, and numba resolves ``resolve_*`` only from the
+    template's own class, so ``.value``/``.valid`` are redefined here alongside
+    the string methods.
+    """
 
     key = _masked_string
+
+    def resolve_value(self, typ: MaskedType) -> types.Type:
+        return typ.value_type
+
+    def resolve_valid(self, typ: MaskedType) -> types.Type:
+        return types.boolean
 
 
 for _name in _BOOL_METHODS:
