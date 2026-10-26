@@ -1013,3 +1013,88 @@ def _lower_istitle(str_view: ir.Value, flags_table_ptr: ir.Value) -> ir.Value:
         scf.yield_([next_off, final_valid, final_should_cap, final_ok])
 
     return arith.andi(loop.results[1], loop.results[3])
+
+
+# --- getitem (character-indexed substring; allocates via NRT) ---------------
+def _count_chars(data: ir.Value, nbytes_i64: ir.Value) -> ir.Value:
+    """Number of UTF-8 characters (start bytes) in ``data[:nbytes]`` as i64."""
+    zero = arith.constant(T.i64(), 0)
+    one = arith.constant(T.i64(), 1)
+    loop = scf.ForOp(zero, nbytes_i64, one, [zero])
+    i = loop.body.arguments[0]
+    count = loop.body.arguments[1]
+    with ir.InsertionPoint(loop.body):
+        is_start = _is_begin_utf8_char(_byte_at(data, i))
+        inc = arith.select(is_start, one, zero)
+        scf.YieldOp([arith.addi(count, inc)])
+    return loop.results[0]
+
+
+def _char_to_byte(
+    data: ir.Value, nbytes_i64: ir.Value, char_pos: ir.Value
+) -> ir.Value:
+    """Byte offset where the ``char_pos``-th character starts.
+
+    Returns ``nbytes`` when ``char_pos`` is at or past the end, so a
+    one-past-the-end position maps to the buffer length (used as a slice stop).
+    """
+    zero = arith.constant(T.i64(), 0)
+    one = arith.constant(T.i64(), 1)
+    loop = scf.ForOp(zero, nbytes_i64, one, [zero, nbytes_i64])
+    i = loop.body.arguments[0]
+    count = loop.body.arguments[1]
+    result = loop.body.arguments[2]
+    with ir.InsertionPoint(loop.body):
+        is_start = _is_begin_utf8_char(_byte_at(data, i))
+        at_target = arith.andi(
+            is_start, arith.cmpi(arith.CmpIPredicate.eq, count, char_pos)
+        )
+        new_result = arith.select(at_target, i, result)
+        new_count = arith.select(is_start, arith.addi(count, one), count)
+        scf.YieldOp([new_count, new_result])
+    return loop.results[1]
+
+
+def lower_getitem_int(
+    gpu_module: ir.Module, str_view: ir.Value, idx_i64: ir.Value
+) -> ir.Value:
+    """``s[i]`` -> the single character at character position ``i``.
+
+    Negative indices count from the end; out-of-range indices yield an empty
+    string (UDFs cannot raise ``IndexError``). Allocates and copies the byte
+    range of the selected UTF-8 character.
+
+    Parameters
+    ----------
+    gpu_module : ir.Module
+        The GPU module the NRT functions are declared in.
+    str_view : ir.Value
+        View of the source string's bytes.
+    idx_i64 : ir.Value
+        Character index (``i64``), possibly negative.
+
+    Returns
+    -------
+    ir.Value
+        The selected single-character owned ``mlir_string``.
+    """
+    zero = arith.constant(T.i64(), 0)
+    one = arith.constant(T.i64(), 1)
+    data = _view_data(str_view)
+    nbytes = llvm.zext(T.i64(), _view_nbytes(str_view))
+    nchars = _count_chars(data, nbytes)
+
+    neg = arith.cmpi(arith.CmpIPredicate.slt, idx_i64, zero)
+    idx = arith.select(neg, arith.addi(idx_i64, nchars), idx_i64)
+    start = arith.maxsi(zero, arith.minsi(idx, nchars))
+    stop = arith.minsi(arith.addi(start, one), nchars)
+
+    byte_start = _char_to_byte(data, nbytes, start)
+    byte_stop = _char_to_byte(data, nbytes, stop)
+    result_len = arith.subi(byte_stop, byte_start)
+
+    mi, out_data = allocate_mlir_string(gpu_module, result_len)
+    llvm.intr_memcpy(
+        out_data, _gep_byte_offset(data, byte_start), result_len, False
+    )
+    return build_mlir_string(mi, out_data, result_len)

@@ -1127,3 +1127,85 @@ def test_strip_chars():
         got = _verify_strings(out, expected)
 
     assert got == [True] * n
+
+
+# --- getitem (character-indexed; string-producing, allocates via NRT) --------
+def test_getitem_first_char():
+    """``s[0]`` returns the first character (UTF-8 aware, multibyte safe)."""
+    vals = ["abc", "h\u00e9llo", "\U0001f600x", "z"]
+    expected = [v[0] for v in vals]
+    n = len(vals)
+    arr, _keep = _make_mlir_string_array(vals)
+    out, _out_keep = _make_output_mlir_string_array(n)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def produce(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i][0]
+
+        produce[1, n](out, arr)
+        got = _verify_strings(out, expected)
+
+    assert got == [True] * n
+
+
+def test_getitem_negative_char():
+    """``s[-1]`` returns the last character, counting from the end."""
+    vals = ["abc", "h\u00e9llo", "x\U0001f600", "z"]
+    expected = [v[-1] for v in vals]
+    n = len(vals)
+    arr, _keep = _make_mlir_string_array(vals)
+    out, _out_keep = _make_output_mlir_string_array(n)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def produce(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i][-1]
+
+        produce[1, n](out, arr)
+        got = _verify_strings(out, expected)
+
+    assert got == [True] * n
+
+
+def test_getitem_out_of_range_is_empty():
+    """An out-of-range index yields an empty string (UDFs cannot raise)."""
+    vals = ["abc", "h\u00e9llo", "", "z"]
+    expected = ["", "", "", ""]
+    n = len(vals)
+    arr, _keep = _make_mlir_string_array(vals)
+    out, _out_keep = _make_output_mlir_string_array(n)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def produce(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i][99]
+
+        produce[1, n](out, arr)
+        got = _verify_strings(out, expected)
+
+    assert got == [True] * n

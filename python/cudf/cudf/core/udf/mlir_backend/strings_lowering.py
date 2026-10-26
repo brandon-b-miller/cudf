@@ -4,9 +4,9 @@
 
 Covers ``len`` (UTF-8 character count), the string comparison operators
 (``==``/``!=``/``<``/``<=``/``>``/``>=``), the affix/search/predicate methods,
-``+`` (concatenation) and ``strip``/``lstrip``/``rstrip`` --- the
-string-*producing* ops, which allocate a new buffer via NRT --- over
-``mlir_string``, ``Masked(mlir_string)`` and
+``+`` (concatenation), ``strip``/``lstrip``/``rstrip`` and ``s[i]`` (character
+indexing) --- the string-*producing* ops, which allocate a new buffer via NRT
+--- over ``mlir_string``, ``Masked(mlir_string)`` and
 string-literal operands; masked operands yield a ``Masked`` result whose validity
 is the AND of the operand validity bits. All lowerings are pure MLIR (see
 :mod:`cudf.core.udf.mlir_backend.string_lowering_impl`). Registered with
@@ -467,6 +467,41 @@ class ConcatMLIRStringTemplate(AbstractTemplate):
         return None
 
 
+class GetitemMLIRStringTemplate(AbstractTemplate):
+    """``s[i]`` (``operator.getitem``, integer index) over (masked) strings."""
+
+    key = operator.getitem
+
+    def generic(
+        self, args: tuple[types.Type, ...], kws: dict
+    ) -> Signature | None:
+        """Resolve ``s[i]`` for an integer index.
+
+        Parameters
+        ----------
+        args : tuple of types.Type
+            ``(string, index)`` types.
+        kws : dict
+            Keyword argument types (must be empty).
+
+        Returns
+        -------
+        Signature or None
+            ``mlir_string`` (plain receiver) or ``Masked(mlir_string)`` (masked
+            receiver), else ``None``.
+        """
+        if len(args) != 2 or kws:
+            return None
+        a, b = args
+        if not isinstance(b, types.Integer):
+            return None
+        if isinstance(a, MLIRStringType):
+            return nb_signature(mlir_string, a, b)
+        if _is_masked_string(a):
+            return nb_signature(MaskedType(mlir_string), a, b)
+        return None
+
+
 class ContainsMLIRStringTemplate(AbstractTemplate):
     """``item in container`` (``operator.contains``) over (masked) strings."""
 
@@ -774,6 +809,23 @@ def _lower_nrt_decref(
     func.call(result=[], callee=callee.name.value, operands_=[meminfo])
 
 
+def _lower_getitem_int_op(
+    builder: MLIRLower, target: Var, args: list[Var], kwargs: list
+) -> None:
+    """``s[i]`` -> single-character ``mlir_string`` / ``Masked(mlir_string)``.
+
+    Validity comes from the receiver only (the integer index is always valid).
+    """
+    valid_ty = builder.get_mlir_type(types.boolean)
+    true_val = arith.constant(valid_ty, 1)
+    view, valid = _view_and_valid(builder, args[0], true_val)
+    idx_i64 = convert(
+        builder.load_var(args[1]), ir.IntegerType.get_signless(64)
+    )
+    result = _impl.lower_getitem_int(builder.mlir_gpu_module, view, idx_i64)
+    _store_maybe_masked(builder, target, result, valid)
+
+
 def _lower_setitem_cpointer_mlir_string(
     builder: MLIRLower, target: Var, args: list[Var], kwargs: list
 ) -> None:
@@ -825,6 +877,17 @@ def _register() -> None:
     typing_registry.register_global(operator.add)(ConcatMLIRStringTemplate)
     for lhs_ty, rhs_ty in _STR_COMBOS:
         lowering_registry.lower(operator.add, lhs_ty, rhs_ty)(_lower_concat_op)
+
+    # ``s[i]`` (integer index) -> single-character (masked) mlir_string
+    typing_registry.register_global(operator.getitem)(
+        GetitemMLIRStringTemplate
+    )
+    lowering_registry.lower(operator.getitem, mlir_string, types.Integer)(
+        _lower_getitem_int_op
+    )
+    lowering_registry.lower(operator.getitem, _masked_string, types.Integer)(
+        _lower_getitem_int_op
+    )
 
     # ``out[i] = s`` marshalling a produced string into an output array
     lowering_registry.lower(
