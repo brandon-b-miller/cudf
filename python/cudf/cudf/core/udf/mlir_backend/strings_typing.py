@@ -224,4 +224,9 @@ def NRT_decref(st):
     :mod:`cudf.core.udf.mlir_backend.strings_lowering`. Used by the host-side
     freeing kernel that releases a column of produced strings once they have
     been copied out (the teardown half of the string-return marshalling).
+
+    Parameters
+    ----------
+    st : mlir_string
+        The string whose ``MemInfo`` reference should be released.
     """

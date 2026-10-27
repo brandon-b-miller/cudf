@@ -17,6 +17,24 @@ typing templates, lowerings, argument handlers, and device-runtime hooks.
 The migration rewrites that teaching layer from numba-cuda's llvmlite-oriented
 extension API to numba-cuda-mlir's MLIR-oriented extension API.
 
+## Supported surface
+
+The target is cuDF's existing JIT UDF feature set, by feature class rather than
+a per-operation list (individual operations land incrementally, so confirm a
+given op against the current typing/lowering registrations):
+
+- nullable scalars (`Masked`/`NA`) and the operators, casts, and `pack_return`
+  over them;
+- read-only string operations (`len`, comparisons, membership, search,
+  character predicates);
+- allocating string operations that produce new strings (concatenation,
+  `strip`/`lstrip`/`rstrip`, character indexing, and further ops in progress);
+- grouped/cooperative reductions through `groupby(...).apply`;
+- rolling-window UDFs through the rolling path.
+
+Out of scope for a given PR is anything not yet registered; a typing template
+alone does not mean an operation is executable.
+
 ## Four separate questions
 
 For any extension operation, answer these separately:
@@ -55,14 +73,14 @@ implements one node in the type algebra used by ordinary `DataFrame.apply`.
 
 ```python
 def f(s):
-    upper = s.upper()
-    result = upper if len(s) > 5 else s + "!"
+    result = (s + "!") if len(s) > 5 else s
     return result
 ```
 
-Input `s` can borrow bytes from an existing cuDF chars buffer. `upper` and
-concatenation allocate new bytes and therefore need owners. Which result escapes
-is data-dependent. Compiler-inserted decrefs can be statically placed on control
+Input `s` can borrow bytes from an existing cuDF chars buffer. The `s + "!"`
+branch allocates new bytes and therefore needs an owner; the other branch
+returns `s` unchanged and stays borrowed. Which result escapes is
+data-dependent. Compiler-inserted decrefs can be statically placed on control
 flow paths, but whether a decref is the final reference is known only at runtime.
 That is why refcounting is required.
 

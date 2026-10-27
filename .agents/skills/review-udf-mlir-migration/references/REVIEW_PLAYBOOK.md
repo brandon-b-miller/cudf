@@ -221,4 +221,4 @@ Verification
 
 If there are no defects, still explain the architecture and evidence. The
 reviewer's lack of compiler context is an expected input to this skill, not a
-reason to return only “looks good.”
+reason to return only "looks good."

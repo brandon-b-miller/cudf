@@ -1,6 +1,8 @@
 # Architecture map
 
-Paths and symbols evolve. Search current source before relying on a name below.
+This map is conceptual. It names modules and symbols only as orientation;
+locate current paths by searching source rather than relying on the names here,
+which evolve.
 
 ## Extension registration
 
@@ -18,12 +20,6 @@ Use types and templates from `numba_cuda_mlir` and its vendored Numba namespace.
 Do not mix stock Numba classes into signatures or registrations.
 
 ## Masked and NA
-
-Primary modules:
-
-- `python/cudf/cudf/core/udf/api.py`
-- `python/cudf/cudf/core/udf/mlir_backend/masked_typing.py`
-- `python/cudf/cudf/core/udf/mlir_backend/masked_lowering.py`
 
 Logical model:
 
@@ -57,14 +53,6 @@ Important details:
   blindly applying an integer operation to raw payloads.
 
 ## Strings
-
-Primary modules:
-
-- `mlir_backend/strings_typing.py`
-- `mlir_backend/strings_lowering.py`
-- `mlir_backend/string_lowering_impl.py`
-- host-side apply/marshalling utilities found by searching for
-  `ManagedStrArrayWrapper`, `MLIRStringArgHandler`, or `mlir_string`.
 
 Current incremental design:
 
@@ -111,12 +99,6 @@ design only to delete it later. Do not mistake "legacy in the MLIR design" for
 
 ## Row apply
 
-Find the current row pipeline from:
-
-- `core/indexed_frame.py`;
-- `core/udf/row_function.py` and/or `mlir_backend/row_function.py`;
-- `scalar_function.py`, `templates.py`, and `udf_kernel_base.py`.
-
 Conceptual flow:
 
 1. infer column and UDF types;
@@ -133,12 +115,6 @@ Check both type-inference compilation and execution compilation. Transitional
 branches sometimes used different compilers for these phases.
 
 ## Groupby apply and cooperative arrays
-
-Find current code by searching:
-
-- `groupby_function`, `groupby_typing`, and `groupby_lowering`;
-- `CooperativeArray`;
-- grouped apply templates and group slot globals.
 
 Conceptual flow:
 

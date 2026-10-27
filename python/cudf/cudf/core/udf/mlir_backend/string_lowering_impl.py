@@ -104,6 +104,20 @@ def build_mlir_string(
 
     ``meminfo`` lands in field 0, which is where numba's reference counting
     looks for the ``MemInfo`` (see ``MLIRStringModel.get_nrt_meminfo``).
+
+    Parameters
+    ----------
+    meminfo : ir.Value
+        The NRT ``MemInfo`` pointer (null for a borrowed string).
+    data : ir.Value
+        Pointer to the UTF-8 byte buffer.
+    nbytes_i64 : ir.Value
+        Byte length of the string (``i64``).
+
+    Returns
+    -------
+    ir.Value
+        The assembled ``mlir_string`` SSA value.
     """
     ptr = llvm.PointerType.get()
     ty = llvm.StructType.get_literal([ptr, ptr, T.i64()])
@@ -127,15 +141,25 @@ def allocate_mlir_string(
     ``NRT_MemInfo_new_varsize`` installs the varsize destructor so the buffer is
     freed when the refcount drops to zero (a no-op under the arena allocator).
     At least one byte is requested to avoid a device ``malloc(0)``.
+
+    Parameters
+    ----------
+    gpu_module : ir.Module
+        The GPU module the NRT functions are declared in.
+    nbytes_i64 : ir.Value
+        Requested buffer size in bytes (``i64``).
+
+    Returns
+    -------
+    tuple of ir.Value
+        ``(meminfo, data_ptr)`` for the newly allocated buffer.
     """
     ptr = llvm.PointerType.get()
     alloc_size = arith.maxui(nbytes_i64, arith.constant(T.i64(), 1))
     mi = _call_nrt(
         gpu_module, "NRT_MemInfo_new_varsize", [T.i64()], [ptr], [alloc_size]
     )
-    data = _call_nrt(
-        gpu_module, "NRT_MemInfo_data_fast", [ptr], [ptr], [mi]
-    )
+    data = _call_nrt(gpu_module, "NRT_MemInfo_data_fast", [ptr], [ptr], [mi])
     return mi, data
 
 
@@ -147,6 +171,20 @@ def lower_concat(
     Computes ``total = lhs.nbytes + rhs.nbytes``, allocates an NRT buffer of
     that size, copies the ``lhs`` then the ``rhs`` bytes, and returns
     ``{meminfo, data, total}``.
+
+    Parameters
+    ----------
+    gpu_module : ir.Module
+        The GPU module the NRT functions are declared in.
+    lhs_view : ir.Value
+        View of the left operand's bytes.
+    rhs_view : ir.Value
+        View of the right operand's bytes.
+
+    Returns
+    -------
+    ir.Value
+        The concatenated owned ``mlir_string``.
     """
     ptr = llvm.PointerType.get()
     lhs_nbytes = llvm.zext(T.i64(), _view_nbytes(lhs_view))

@@ -3,6 +3,10 @@
 This file records design intent, not current merge status. Verify PRs, branches,
 and source before reporting status.
 
+This reference is migration-era context; once the full cutover to
+numba-cuda-mlir lands and the legacy backend is removed, it can be retired
+(folded into a short note or dropped).
+
 ## Why the migration happened
 
 numba-cuda entered maintenance mode and would not carry cuDF indefinitely across
