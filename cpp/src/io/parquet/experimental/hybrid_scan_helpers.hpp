@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace cudf::io::parquet::experimental::detail {
@@ -36,7 +37,7 @@ using parquet::detail::simplified_expression_opt;
  * @brief Class for parsing dataset metadata
  */
 struct metadata : public metadata_base {
-  explicit metadata(cudf::host_span<uint8_t const> footer_bytes);
+  explicit metadata(std::span<uint8_t const> footer_bytes);
   explicit metadata(FileMetaData const& other) { static_cast<FileMetaData&>(*this) = other; }
   metadata(metadata const& other)            = delete;
   metadata(metadata&& other)                 = default;
@@ -88,7 +89,7 @@ class aggregate_reader_metadata : public aggregate_reader_metadata_base {
    * @param use_arrow_schema Whether to use Arrow schema
    * @param has_cols_from_mismatched_srcs Whether to have columns from mismatched sources
    */
-  aggregate_reader_metadata(std::span<cudf::host_span<uint8_t const> const> footer_bytes,
+  aggregate_reader_metadata(std::span<std::span<uint8_t const> const> footer_bytes,
                             bool use_arrow_schema,
                             bool has_cols_from_mismatched_srcs);
 
@@ -157,7 +158,7 @@ class aggregate_reader_metadata : public aggregate_reader_metadata_base {
    *
    * @param page_index_bytes Host span of Parquet page index buffer bytes, one per source
    */
-  void setup_page_indexes(cudf::host_span<cudf::host_span<uint8_t const> const> page_index_bytes);
+  void setup_page_indexes(std::span<std::span<uint8_t const> const> page_index_bytes);
 
   /**
    * @brief Get all available row group indices, one inner vector per source
@@ -257,16 +258,17 @@ class aggregate_reader_metadata : public aggregate_reader_metadata_base {
    * @param output_dtypes Datatypes of output columns
    * @param output_column_schemas schema indices of output columns
    * @param filter AST expression to filter row groups based on dictionary pages
+   * @param include_unbounded Whether to also return an upper-bound range for a column chunk whose
+   *        footer has neither a `dictionary_page_offset` nor an offset index
    *
-   * @return A pair of vectors containing dictionary page byte ranges and corresponding source
-   *         indices
+   * @return A pair of vectors containing dictionary page ranges and corresponding source indices
    */
-  [[nodiscard]] std::pair<std::vector<cudf::io::text::byte_range_info>,
-                          std::vector<cudf::size_type>>
+  [[nodiscard]] std::pair<std::vector<dictionary_byte_range>, std::vector<cudf::size_type>>
   dictionary_pages_byte_ranges(std::span<std::vector<size_type> const> row_group_indices,
                                std::span<data_type const> output_dtypes,
                                std::span<cudf::size_type const> output_column_schemas,
-                               std::reference_wrapper<ast::expression const> filter);
+                               std::reference_wrapper<ast::expression const> filter,
+                               bool include_unbounded = false);
 
   /**
    * @brief Filter the row groups using dictionaries based on predicate filter
