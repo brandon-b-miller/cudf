@@ -852,10 +852,10 @@ def _register() -> None:
         lowering_registry.lower_getattr(_masked_string, name)(getattr_fn)
 
     # strip/lstrip/rstrip (optional chars arg) -> (masked) mlir_string
-    for name, impl_fn in _STRIP_METHODS.items():
-        getattr_fn = _make_lower_strip(impl_fn)
-        lowering_registry.lower_getattr(mlir_string, name)(getattr_fn)
-        lowering_registry.lower_getattr(_masked_string, name)(getattr_fn)
+    for name, strip_impl in _STRIP_METHODS.items():
+        strip_getattr = _make_lower_strip(strip_impl)
+        lowering_registry.lower_getattr(mlir_string, name)(strip_getattr)
+        lowering_registry.lower_getattr(_masked_string, name)(strip_getattr)
 
 
 _register()
