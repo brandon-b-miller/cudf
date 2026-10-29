@@ -4,9 +4,9 @@
 
 Covers ``len`` (UTF-8 character count), the string comparison operators
 (``==``/``!=``/``<``/``<=``/``>``/``>=``), the affix/search/predicate methods,
-``+`` (concatenation), ``strip``/``lstrip``/``rstrip`` and ``s[i]`` (character
-indexing) --- the string-*producing* ops, which allocate a new buffer via NRT
---- over ``mlir_string``, ``Masked(mlir_string)`` and
+``+`` (concatenation), ``strip``/``lstrip``/``rstrip`` and ``s[i]``/``s[a:b]``
+(character indexing and slicing) --- the string-*producing* ops, which allocate
+a new buffer via NRT --- over ``mlir_string``, ``Masked(mlir_string)`` and
 string-literal operands; masked operands yield a ``Masked`` result whose validity
 is the AND of the operand validity bits. All lowerings are pure MLIR (see
 :mod:`cudf.core.udf.mlir_backend.string_lowering_impl`). Registered with
@@ -28,6 +28,7 @@ from numba_cuda_mlir.lowering_utilities import (
     convert,
     get_or_insert_function,
 )
+from numba_cuda_mlir.numba_cuda.types import slice2_type
 from numba_cuda_mlir.numba_cuda.typing.templates import (
     AbstractTemplate,
     AttributeTemplate,
@@ -468,19 +469,19 @@ class ConcatMLIRStringTemplate(AbstractTemplate):
 
 
 class GetitemMLIRStringTemplate(AbstractTemplate):
-    """``s[i]`` (``operator.getitem``, integer index) over (masked) strings."""
+    """``s[i]``/``s[a:b]`` (``operator.getitem``) over (masked) strings."""
 
     key = operator.getitem
 
     def generic(
         self, args: tuple[types.Type, ...], kws: dict
     ) -> Signature | None:
-        """Resolve ``s[i]`` for an integer index.
+        """Resolve ``s[i]`` (integer index) or ``s[a:b]`` (2-element slice).
 
         Parameters
         ----------
         args : tuple of types.Type
-            ``(string, index)`` types.
+            ``(string, index_or_slice)`` types.
         kws : dict
             Keyword argument types (must be empty).
 
@@ -488,12 +489,12 @@ class GetitemMLIRStringTemplate(AbstractTemplate):
         -------
         Signature or None
             ``mlir_string`` (plain receiver) or ``Masked(mlir_string)`` (masked
-            receiver), else ``None``.
+            receiver). Strided slices (``s[a:b:c]``) are not supported.
         """
         if len(args) != 2 or kws:
             return None
         a, b = args
-        if not isinstance(b, types.Integer):
+        if not (isinstance(b, types.Integer) or b == slice2_type):
             return None
         if isinstance(a, MLIRStringType):
             return nb_signature(mlir_string, a, b)
@@ -826,6 +827,27 @@ def _lower_getitem_int_op(
     _store_maybe_masked(builder, target, result, valid)
 
 
+def _lower_getitem_slice_op(
+    builder: MLIRLower, target: Var, args: list[Var], kwargs: list
+) -> None:
+    """``s[a:b]`` -> substring ``mlir_string`` / ``Masked(mlir_string)``.
+
+    Extracts the slice's ``start``/``stop`` (``index`` type) and casts them to
+    ``i64``; validity comes from the receiver only.
+    """
+    valid_ty = builder.get_mlir_type(types.boolean)
+    true_val = arith.constant(valid_ty, 1)
+    view, valid = _view_and_valid(builder, args[0], true_val)
+    slice_val = builder.load_var(args[1])
+    i64 = ir.IntegerType.get_signless(64)
+    start = arith.index_cast(i64, slice_val.start)
+    stop = arith.index_cast(i64, slice_val.stop)
+    result = _impl.lower_getitem_slice(
+        builder.mlir_gpu_module, view, start, stop
+    )
+    _store_maybe_masked(builder, target, result, valid)
+
+
 def _lower_setitem_cpointer_mlir_string(
     builder: MLIRLower, target: Var, args: list[Var], kwargs: list
 ) -> None:
@@ -887,6 +909,12 @@ def _register() -> None:
     )
     lowering_registry.lower(operator.getitem, _masked_string, types.Integer)(
         _lower_getitem_int_op
+    )
+    lowering_registry.lower(operator.getitem, mlir_string, slice2_type)(
+        _lower_getitem_slice_op
+    )
+    lowering_registry.lower(operator.getitem, _masked_string, slice2_type)(
+        _lower_getitem_slice_op
     )
 
     # ``out[i] = s`` marshalling a produced string into an output array

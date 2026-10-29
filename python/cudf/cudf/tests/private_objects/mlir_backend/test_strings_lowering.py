@@ -1209,3 +1209,57 @@ def test_getitem_out_of_range_is_empty():
         got = _verify_strings(out, expected)
 
     assert got == [True] * n
+
+
+def test_getitem_slice():
+    """``s[1:3]`` returns the character substring (UTF-8 aware)."""
+    vals = ["abcde", "h\u00e9llo", "x\U0001f600yz", "ab"]
+    expected = [v[1:3] for v in vals]
+    n = len(vals)
+    arr, _keep = _make_mlir_string_array(vals)
+    out, _out_keep = _make_output_mlir_string_array(n)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def produce(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i][1:3]
+
+        produce[1, n](out, arr)
+        got = _verify_strings(out, expected)
+
+    assert got == [True] * n
+
+
+def test_getitem_slice_negative():
+    """``s[-3:-1]`` slices with negative bounds counting from the end."""
+    vals = ["abcde", "h\u00e9llo", "wx\U0001f600yz", "abc"]
+    expected = [v[-3:-1] for v in vals]
+    n = len(vals)
+    arr, _keep = _make_mlir_string_array(vals)
+    out, _out_keep = _make_output_mlir_string_array(n)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def produce(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i][-3:-1]
+
+        produce[1, n](out, arr)
+        got = _verify_strings(out, expected)
+
+    assert got == [True] * n

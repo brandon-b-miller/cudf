@@ -1098,3 +1098,54 @@ def lower_getitem_int(
         out_data, _gep_byte_offset(data, byte_start), result_len, False
     )
     return build_mlir_string(mi, out_data, result_len)
+
+
+def lower_getitem_slice(
+    gpu_module: ir.Module,
+    str_view: ir.Value,
+    start_i64: ir.Value,
+    stop_i64: ir.Value,
+) -> ir.Value:
+    """``s[a:b]`` -> the substring over character positions ``[a, b)``.
+
+    Negative bounds count from the end; both bounds are normalized and clamped
+    to ``[0, nchars]`` (with ``stop >= start``), so the copied byte range is
+    always in bounds. ``step`` is not supported (handled at the typing layer).
+
+    Parameters
+    ----------
+    gpu_module : ir.Module
+        The GPU module the NRT functions are declared in.
+    str_view : ir.Value
+        View of the source string's bytes.
+    start_i64 : ir.Value
+        Start character position (``i64``), possibly negative.
+    stop_i64 : ir.Value
+        Stop character position (``i64``), possibly negative.
+
+    Returns
+    -------
+    ir.Value
+        The substring owned ``mlir_string``.
+    """
+    zero = arith.constant(T.i64(), 0)
+    data = _view_data(str_view)
+    nbytes = llvm.zext(T.i64(), _view_nbytes(str_view))
+    nchars = _count_chars(data, nbytes)
+
+    def _norm(pos: ir.Value) -> ir.Value:
+        neg = arith.cmpi(arith.CmpIPredicate.slt, pos, zero)
+        return arith.select(neg, arith.addi(pos, nchars), pos)
+
+    start = arith.maxsi(zero, arith.minsi(_norm(start_i64), nchars))
+    stop = arith.maxsi(start, arith.minsi(_norm(stop_i64), nchars))
+
+    byte_start = _char_to_byte(data, nbytes, start)
+    byte_stop = _char_to_byte(data, nbytes, stop)
+    result_len = arith.subi(byte_stop, byte_start)
+
+    mi, out_data = allocate_mlir_string(gpu_module, result_len)
+    llvm.intr_memcpy(
+        out_data, _gep_byte_offset(data, byte_start), result_len, False
+    )
+    return build_mlir_string(mi, out_data, result_len)
