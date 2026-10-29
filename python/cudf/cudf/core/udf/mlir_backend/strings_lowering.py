@@ -5,9 +5,9 @@
 Covers ``len`` (UTF-8 character count), the string comparison operators
 (``==``/``!=``/``<``/``<=``/``>``/``>=``), the affix/search/predicate methods,
 ``+`` (concatenation), ``strip``/``lstrip``/``rstrip``, ``s[i]``/``s[a:b]``
-(character indexing and slicing) and ``replace`` --- the string-*producing*
-ops, which allocate a new buffer via NRT --- over ``mlir_string``,
-``Masked(mlir_string)`` and
+(character indexing and slicing), ``replace`` and ``upper``/``lower`` --- the
+string-*producing* ops, which allocate a new buffer via NRT --- over
+``mlir_string``, ``Masked(mlir_string)`` and
 string-literal operands; masked operands yield a ``Masked`` result whose validity
 is the AND of the operand validity bits. All lowerings are pure MLIR (see
 :mod:`cudf.core.udf.mlir_backend.string_lowering_impl`). Registered with
@@ -37,7 +37,11 @@ from numba_cuda_mlir.numba_cuda.typing.templates import (
 )
 from numba_cuda_mlir.typing import signature as nb_signature
 
-from pylibcudf.strings.char_types import get_character_flags_table_ptr
+from pylibcudf.strings.char_types import (
+    get_character_cases_table_ptr,
+    get_character_flags_table_ptr,
+    get_special_case_mapping_table_ptr,
+)
 
 from cudf.core.udf.mlir_backend import string_lowering_impl as _impl
 from cudf.core.udf.mlir_backend.masked_lowering import (
@@ -103,6 +107,12 @@ _STRIP_METHODS = {
     "strip": _impl.lower_strip,
     "lstrip": _impl.lower_lstrip,
     "rstrip": _impl.lower_rstrip,
+}
+
+# case-conversion method name -> its pure-MLIR impl (no arg -> mlir_string).
+_CASE_METHODS = {
+    "upper": _impl.lower_upper,
+    "lower": _impl.lower_lower,
 }
 
 # character-class predicate method name -> its pure-MLIR impl (no arg -> bool).
@@ -375,6 +385,39 @@ def _make_replace_attr(masked: bool) -> object:
     return resolve
 
 
+def _make_case_attr(attrname: str, masked: bool) -> object:
+    """Build a ``resolve_<upper/lower>`` for a no-arg method returning a string.
+
+    Parameters
+    ----------
+    attrname : str
+        Method name (``"upper"`` or ``"lower"``).
+    masked : bool
+        Whether the receiver is ``Masked(mlir_string)`` (wraps the result).
+
+    Returns
+    -------
+    callable
+        A ``resolve_`` function for the attribute template.
+    """
+    recvr = _masked_string if masked else mlir_string
+    result_ty = MaskedType(mlir_string) if masked else mlir_string
+
+    class _CaseTemplate(AbstractTemplate):
+        key = f"MLIRString.{attrname}.{'m' if masked else 's'}"
+
+        def generic(self, args, kws):
+            """Resolve ``s.upper()`` / ``s.lower()`` -> (masked) mlir_string."""
+            if not args and not kws:
+                return nb_signature(result_ty, recvr=self.this)
+            return None
+
+    def resolve(self, mod):
+        return types.BoundFunction(_CaseTemplate, recvr)
+
+    return resolve
+
+
 @typing_registry.register_attr
 class MLIRStringAttrs(AttributeTemplate):
     """Attribute typing for ``mlir_string`` methods."""
@@ -471,6 +514,17 @@ setattr(MLIRStringAttrs, "resolve_replace", _make_replace_attr(masked=False))
 setattr(
     MaskedMLIRStringAttrs, "resolve_replace", _make_replace_attr(masked=True)
 )
+for _name in _CASE_METHODS:
+    setattr(
+        MLIRStringAttrs,
+        f"resolve_{_name}",
+        _make_case_attr(_name, masked=False),
+    )
+    setattr(
+        MaskedMLIRStringAttrs,
+        f"resolve_{_name}",
+        _make_case_attr(_name, masked=True),
+    )
 
 
 class ConcatMLIRStringTemplate(AbstractTemplate):
@@ -730,13 +784,27 @@ def _make_lower_binary(impl_fn: object) -> object:
     return _getattr
 
 
-def _flags_table_ptr_const() -> ir.Value:
-    """MLIR pointer constant for the libcudf character-flags device table."""
-    addr = int(get_character_flags_table_ptr())
+def _table_ptr_const(addr: int) -> ir.Value:
+    """MLIR pointer constant for a libcudf device-table address."""
     if addr >= (1 << 63):
         addr -= 1 << 64
     i64 = ir.IntegerType.get_signless(64)
     return llvm.inttoptr(llvm.PointerType.get(), arith.constant(i64, addr))
+
+
+def _flags_table_ptr_const() -> ir.Value:
+    """MLIR pointer constant for the libcudf character-flags device table."""
+    return _table_ptr_const(int(get_character_flags_table_ptr()))
+
+
+def _cases_table_ptr_const() -> ir.Value:
+    """MLIR pointer constant for the libcudf character-cases device table."""
+    return _table_ptr_const(int(get_character_cases_table_ptr()))
+
+
+def _special_table_ptr_const() -> ir.Value:
+    """MLIR pointer constant for the libcudf special-case mapping device table."""
+    return _table_ptr_const(int(get_special_case_mapping_table_ptr()))
 
 
 def _make_lower_is(impl_fn: object) -> object:
@@ -799,6 +867,33 @@ def _make_lower_replace() -> object:
         _store_maybe_masked(
             builder, target, result, arith.andi(arith.andi(vs, vo), vn)
         )
+
+    def _getattr(context, builder, target, value, attr=None):
+        builder.store_var(target, DeferredMethodCall(value, _impl_lower))
+
+    return _getattr
+
+
+def _make_lower_case(impl_fn: object) -> object:
+    """Build the ``lower_getattr`` for ``s.upper()`` / ``s.lower()``.
+
+    Passes the flags, cases, and special-case device-table pointers through to
+    the case-conversion impl; packs a ``Masked`` result when the receiver is
+    masked.
+    """
+
+    def _impl_lower(builder, target, args, kwargs):
+        valid_ty = builder.get_mlir_type(types.boolean)
+        true_val = arith.constant(valid_ty, 1)
+        view, valid = _view_and_valid(builder, args[0], true_val)
+        result = impl_fn(
+            builder.mlir_gpu_module,
+            view,
+            _flags_table_ptr_const(),
+            _cases_table_ptr_const(),
+            _special_table_ptr_const(),
+        )
+        _store_maybe_masked(builder, target, result, valid)
 
     def _getattr(context, builder, target, value, attr=None):
         builder.store_var(target, DeferredMethodCall(value, _impl_lower))
@@ -1022,6 +1117,12 @@ def _register() -> None:
     replace_getattr = _make_lower_replace()
     lowering_registry.lower_getattr(mlir_string, "replace")(replace_getattr)
     lowering_registry.lower_getattr(_masked_string, "replace")(replace_getattr)
+
+    # upper/lower (no arg) -> (masked) mlir_string
+    for name, case_impl in _CASE_METHODS.items():
+        case_getattr = _make_lower_case(case_impl)
+        lowering_registry.lower_getattr(mlir_string, name)(case_getattr)
+        lowering_registry.lower_getattr(_masked_string, name)(case_getattr)
 
     # replace(old, new) -> (masked) mlir_string
     replace_getattr = _make_lower_replace()

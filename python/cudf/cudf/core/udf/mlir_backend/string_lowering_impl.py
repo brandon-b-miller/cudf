@@ -852,6 +852,11 @@ _CT_LOWER = int(StringCharacterTypes.LOWER)
 _CT_ALPHANUM = int(StringCharacterTypes.ALPHANUM)
 _CT_CASE_TYPES = int(StringCharacterTypes.CASE_TYPES)
 _CT_ALL_TYPES = int(StringCharacterTypes.ALL_TYPES)
+# The SPECIAL bit (0x80) is not part of the public StringCharacterTypes enum;
+# it marks characters whose case conversion lives in the special-case table.
+_CT_SPECIAL = 1 << 7
+# Prime used to index the special-case mapping table (cudf::strings::detail).
+_SPECIAL_CASE_PRIME = 499
 
 
 def _utf8_byte_width(first_byte: ir.Value) -> ir.Value:
@@ -1299,3 +1304,381 @@ def lower_getitem_slice(
         out_data, _gep_byte_offset(data, byte_start), result_len, False
     )
     return build_mlir_string(mi, out_data, result_len)
+
+
+# --- case conversion (upper/lower via the Unicode cases tables) ------------
+def _codepoint_to_utf8_bytes(cp_i32: ir.Value) -> ir.Value:
+    """UTF-8 byte width (i64) of code point ``cp_i32``."""
+    i32 = ir.IntegerType.get_signless(32)
+    is1 = arith.cmpi(
+        arith.CmpIPredicate.ult, cp_i32, arith.constant(i32, 0x80)
+    )
+    is2 = arith.cmpi(
+        arith.CmpIPredicate.ult, cp_i32, arith.constant(i32, 0x800)
+    )
+    is3 = arith.cmpi(
+        arith.CmpIPredicate.ult, cp_i32, arith.constant(i32, 0x10000)
+    )
+    n = arith.constant(T.i64(), 4)
+    n = arith.select(is3, arith.constant(T.i64(), 3), n)
+    n = arith.select(is2, arith.constant(T.i64(), 2), n)
+    return arith.select(is1, arith.constant(T.i64(), 1), n)
+
+
+def _write_codepoint_utf8(
+    data_ptr: ir.Value, byte_offset: ir.Value, cp_i32: ir.Value
+) -> ir.Value:
+    """Encode ``cp_i32`` as UTF-8 at ``data_ptr[byte_offset]``; return width (i64).
+
+    All four byte positions are written unconditionally (so there is no
+    conditional side effect); only the returned width reflects the real length,
+    and the caller copies exactly that many bytes.
+    """
+    i32 = ir.IntegerType.get_signless(32)
+
+    def _c(v: int) -> ir.Value:
+        return arith.constant(i32, v)
+
+    nbytes = _codepoint_to_utf8_bytes(cp_i32)
+    is1 = arith.cmpi(
+        arith.CmpIPredicate.eq, nbytes, arith.constant(T.i64(), 1)
+    )
+    is2 = arith.cmpi(
+        arith.CmpIPredicate.eq, nbytes, arith.constant(T.i64(), 2)
+    )
+    is3 = arith.cmpi(
+        arith.CmpIPredicate.eq, nbytes, arith.constant(T.i64(), 3)
+    )
+
+    def _t(v: ir.Value) -> ir.Value:
+        return arith.trunci(T.i8(), v)
+
+    b1_0 = _t(cp_i32)
+    b2_0 = _t(arith.ori(arith.shrui(cp_i32, _c(6)), _c(0xC0)))
+    b2_1 = _t(arith.ori(arith.andi(cp_i32, _c(0x3F)), _c(0x80)))
+    b3_0 = _t(arith.ori(arith.shrui(cp_i32, _c(12)), _c(0xE0)))
+    b3_1 = _t(
+        arith.ori(arith.andi(arith.shrui(cp_i32, _c(6)), _c(0x3F)), _c(0x80))
+    )
+    b3_2 = _t(arith.ori(arith.andi(cp_i32, _c(0x3F)), _c(0x80)))
+    b4_0 = _t(arith.ori(arith.shrui(cp_i32, _c(18)), _c(0xF0)))
+    b4_1 = _t(
+        arith.ori(arith.andi(arith.shrui(cp_i32, _c(12)), _c(0x3F)), _c(0x80))
+    )
+    b4_2 = _t(
+        arith.ori(arith.andi(arith.shrui(cp_i32, _c(6)), _c(0x3F)), _c(0x80))
+    )
+    b4_3 = _t(arith.ori(arith.andi(cp_i32, _c(0x3F)), _c(0x80)))
+
+    byte0 = arith.select(
+        is1, b1_0, arith.select(is2, b2_0, arith.select(is3, b3_0, b4_0))
+    )
+    byte1 = arith.select(is2, b2_1, arith.select(is3, b3_1, b4_1))
+    byte2 = arith.select(is3, b3_2, b4_2)
+    byte3 = b4_3
+
+    def _dst(step: int) -> ir.Value:
+        return _gep_byte_offset(
+            data_ptr, arith.addi(byte_offset, arith.constant(T.i64(), step))
+        )
+
+    llvm.store(byte0, _gep_byte_offset(data_ptr, byte_offset))
+    llvm.store(byte1, _dst(1))
+    llvm.store(byte2, _dst(2))
+    llvm.store(byte3, _dst(3))
+    return nbytes
+
+
+def _case_convert_char_loop(
+    data_ptr: ir.Value,
+    nbytes_i64: ir.Value,
+    flags_ptr: ir.Value,
+    cases_ptr: ir.Value,
+    special_ptr: ir.Value,
+    case_flag_i8: ir.Value,
+    is_upper: bool,
+    out_ptr: ir.Value | None,
+) -> ir.Value:
+    """Per-character case-conversion scan; returns total output bytes (i64).
+
+    With ``out_ptr is None`` this counts output bytes (sizing pass); otherwise it
+    writes converted bytes. Characters flagged with ``case_flag_i8`` convert via
+    the cases table; characters flagged SPECIAL (and not upper/lower) use the
+    special-case mapping table (one code point to several). Each path writes into
+    its own scratch buffer and a single clamped ``memcpy`` emits the chosen
+    result, so there is no conditional side effect.
+    """
+    i32 = ir.IntegerType.get_signless(32)
+    i16 = ir.IntegerType.get_signless(16)
+    zero = arith.constant(T.i64(), 0)
+    one = arith.constant(T.i64(), 1)
+    three = arith.constant(T.i64(), 3)
+    false_i1 = arith.constant(ir.IntegerType.get_signless(1), 0)
+
+    def _i8(v: int) -> ir.Value:
+        return arith.constant(T.i8(), v)
+
+    if out_ptr is not None:
+        scratch_normal = llvm.alloca(
+            llvm.PointerType.get(),
+            arith.constant(T.i64(), 4),
+            elem_type=T.i8(),
+        )
+        scratch_special = llvm.alloca(
+            llvm.PointerType.get(),
+            arith.constant(T.i64(), 12),
+            elem_type=T.i8(),
+        )
+
+    loop = scf.ForOp(zero, nbytes_i64, one, [zero, zero])
+    pos = loop.body.arguments[0]
+    out_off = loop.body.arguments[1]
+    skip_until = loop.body.arguments[2]
+    with ir.InsertionPoint(loop.body):
+        should_skip = arith.cmpi(arith.CmpIPredicate.ult, pos, skip_until)
+        cp, width = _decode_utf8_to_codepoint(data_ptr, pos, nbytes_i64)
+        cp_i64 = arith.extui(T.i64(), cp)
+
+        in_range = arith.cmpi(
+            arith.CmpIPredicate.ule, cp, arith.constant(i32, 0xFFFF)
+        )
+        flag_raw = llvm.load(T.i8(), _gep_byte_offset(flags_ptr, cp_i64))
+        flag = arith.select(in_range, flag_raw, _i8(0))
+
+        matches_case = arith.cmpi(
+            arith.CmpIPredicate.ne, arith.andi(flag, case_flag_i8), _i8(0)
+        )
+        is_special = arith.cmpi(
+            arith.CmpIPredicate.ne, arith.andi(flag, _i8(_CT_SPECIAL)), _i8(0)
+        )
+        is_upper_or_lower = arith.cmpi(
+            arith.CmpIPredicate.ne,
+            arith.andi(flag, _i8(_CT_UPPER | _CT_LOWER)),
+            _i8(0),
+        )
+        special_only = arith.andi(
+            is_special,
+            arith.cmpi(arith.CmpIPredicate.eq, is_upper_or_lower, false_i1),
+        )
+        needs_convert = arith.ori(matches_case, special_only)
+
+        # non-special path: cases_table[cp] (u16 entries)
+        case_cp_i16 = llvm.load(
+            i16, _gep_byte_offset(cases_ptr, arith.shli(cp_i64, one))
+        )
+        case_cp_i32 = arith.extui(i32, case_cp_i16)
+        normal_out_bytes = _codepoint_to_utf8_bytes(case_cp_i32)
+        normal_new_off = arith.addi(out_off, normal_out_bytes)
+
+        # special path: special_table[cp % PRIME], 16-byte entries
+        hash_i64 = arith.extui(
+            T.i64(),
+            arith.remui(cp, arith.constant(i32, _SPECIAL_CASE_PRIME)),
+        )
+        entry_ptr = _gep_byte_offset(
+            special_ptr, arith.muli(hash_i64, arith.constant(T.i64(), 16))
+        )
+        count_offset = (
+            arith.constant(T.i64(), 0)
+            if is_upper
+            else arith.constant(T.i64(), 8)
+        )
+        num_chars_raw = arith.extui(
+            T.i64(), llvm.load(i16, _gep_byte_offset(entry_ptr, count_offset))
+        )
+        num_chars = arith.select(
+            arith.cmpi(arith.CmpIPredicate.ugt, num_chars_raw, three),
+            three,
+            num_chars_raw,
+        )
+        chars_base = _gep_byte_offset(
+            entry_ptr,
+            arith.constant(T.i64(), 2 if is_upper else 10),
+        )
+
+        sc_count = scf.ForOp(zero, num_chars, one, [zero])
+        sc_ci = sc_count.body.arguments[0]
+        sc_cacc = sc_count.body.arguments[1]
+        with ir.InsertionPoint(sc_count.body):
+            sc_cp = arith.extui(
+                i32,
+                llvm.load(
+                    i16,
+                    _gep_byte_offset(chars_base, arith.shli(sc_ci, one)),
+                ),
+            )
+            scf.YieldOp([arith.addi(sc_cacc, _codepoint_to_utf8_bytes(sc_cp))])
+        special_out_bytes = sc_count.results[0]
+
+        converted_off = arith.select(
+            is_special,
+            arith.addi(out_off, special_out_bytes),
+            normal_new_off,
+        )
+        new_off = arith.select(
+            needs_convert, converted_off, arith.addi(out_off, width)
+        )
+        final_out_off = arith.select(should_skip, out_off, new_off)
+        new_skip = arith.select(
+            should_skip, skip_until, arith.addi(pos, width)
+        )
+
+        if out_ptr is not None:
+            _write_codepoint_utf8(scratch_normal, zero, case_cp_i32)
+            sc_wr = scf.ForOp(zero, num_chars, one, [zero])
+            sc_wi = sc_wr.body.arguments[0]
+            sc_wacc = sc_wr.body.arguments[1]
+            with ir.InsertionPoint(sc_wr.body):
+                sc_wcp = arith.extui(
+                    i32,
+                    llvm.load(
+                        i16,
+                        _gep_byte_offset(chars_base, arith.shli(sc_wi, one)),
+                    ),
+                )
+                scf.YieldOp(
+                    [
+                        arith.addi(
+                            sc_wacc,
+                            _write_codepoint_utf8(
+                                scratch_special, sc_wacc, sc_wcp
+                            ),
+                        )
+                    ]
+                )
+            conv_src = arith.select(
+                is_special, scratch_special, scratch_normal
+            )
+            chosen_src = arith.select(
+                needs_convert, conv_src, _gep_byte_offset(data_ptr, pos)
+            )
+            chosen_len = arith.select(
+                needs_convert,
+                arith.select(is_special, special_out_bytes, normal_out_bytes),
+                width,
+            )
+            safe_len = arith.select(should_skip, zero, chosen_len)
+            llvm.intr_memcpy(
+                _gep_byte_offset(out_ptr, out_off), chosen_src, safe_len, False
+            )
+
+        scf.YieldOp([final_out_off, new_skip])
+
+    return loop.results[0]
+
+
+def _lower_case(
+    gpu_module: ir.Module,
+    str_view: ir.Value,
+    flags_ptr: ir.Value,
+    cases_ptr: ir.Value,
+    special_ptr: ir.Value,
+    case_flag: int,
+    is_upper: bool,
+) -> ir.Value:
+    """Shared upper/lower: size, allocate, then convert.
+
+    ``flags_ptr``/``cases_ptr``/``special_ptr`` are device pointers to the
+    libcudf flags, cases, and special-case tables.
+    """
+    data = _view_data(str_view)
+    nb = llvm.zext(T.i64(), _view_nbytes(str_view))
+    case_flag_i8 = arith.constant(T.i8(), case_flag)
+    out_nbytes = _case_convert_char_loop(
+        data,
+        nb,
+        flags_ptr,
+        cases_ptr,
+        special_ptr,
+        case_flag_i8,
+        is_upper,
+        None,
+    )
+    mi, out_data = allocate_mlir_string(gpu_module, out_nbytes)
+    _case_convert_char_loop(
+        data,
+        nb,
+        flags_ptr,
+        cases_ptr,
+        special_ptr,
+        case_flag_i8,
+        is_upper,
+        out_data,
+    )
+    return build_mlir_string(mi, out_data, out_nbytes)
+
+
+def lower_upper(
+    gpu_module: ir.Module,
+    str_view: ir.Value,
+    flags_ptr: ir.Value,
+    cases_ptr: ir.Value,
+    special_ptr: ir.Value,
+) -> ir.Value:
+    """``s.upper()`` -> uppercased ``mlir_string`` (converts lower-case chars).
+
+    Parameters
+    ----------
+    gpu_module : ir.Module
+        The GPU module the NRT functions are declared in.
+    str_view : ir.Value
+        View of the source string's bytes.
+    flags_ptr : ir.Value
+        Device pointer to the character-flags table.
+    cases_ptr : ir.Value
+        Device pointer to the character-cases table.
+    special_ptr : ir.Value
+        Device pointer to the special-case mapping table.
+
+    Returns
+    -------
+    ir.Value
+        The uppercased owned ``mlir_string``.
+    """
+    return _lower_case(
+        gpu_module,
+        str_view,
+        flags_ptr,
+        cases_ptr,
+        special_ptr,
+        _CT_LOWER,
+        True,
+    )
+
+
+def lower_lower(
+    gpu_module: ir.Module,
+    str_view: ir.Value,
+    flags_ptr: ir.Value,
+    cases_ptr: ir.Value,
+    special_ptr: ir.Value,
+) -> ir.Value:
+    """``s.lower()`` -> lowercased ``mlir_string`` (converts upper-case chars).
+
+    Parameters
+    ----------
+    gpu_module : ir.Module
+        The GPU module the NRT functions are declared in.
+    str_view : ir.Value
+        View of the source string's bytes.
+    flags_ptr : ir.Value
+        Device pointer to the character-flags table.
+    cases_ptr : ir.Value
+        Device pointer to the character-cases table.
+    special_ptr : ir.Value
+        Device pointer to the special-case mapping table.
+
+    Returns
+    -------
+    ir.Value
+        The lowercased owned ``mlir_string``.
+    """
+    return _lower_case(
+        gpu_module,
+        str_view,
+        flags_ptr,
+        cases_ptr,
+        special_ptr,
+        _CT_UPPER,
+        False,
+    )
