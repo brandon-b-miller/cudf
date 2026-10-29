@@ -1263,3 +1263,85 @@ def test_getitem_slice_negative():
         got = _verify_strings(out, expected)
 
     assert got == [True] * n
+
+
+# --- replace (string-producing; allocates via NRT) --------------------------
+def test_replace_single_char():
+    """``s.replace("l", "L")`` over ASCII and multibyte sources."""
+    vals = ["hello", "llll", "abc", "h\u00e9llo", ""]
+    expected = [v.replace("l", "L") for v in vals]
+    n = len(vals)
+    arr, _keep = _make_mlir_string_array(vals)
+    out, _out_keep = _make_output_mlir_string_array(n)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def produce(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i].replace("l", "L")
+
+        produce[1, n](out, arr)
+        got = _verify_strings(out, expected)
+
+    assert got == [True] * n
+
+
+def test_replace_multichar_nonoverlapping():
+    """``s.replace("aa", "b")`` replaces non-overlapping multi-byte targets."""
+    vals = ["aaa", "aaaa", "aXa", "aa", "", "baab"]
+    expected = [v.replace("aa", "b") for v in vals]
+    n = len(vals)
+    arr, _keep = _make_mlir_string_array(vals)
+    out, _out_keep = _make_output_mlir_string_array(n)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def produce(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i].replace("aa", "b")
+
+        produce[1, n](out, arr)
+        got = _verify_strings(out, expected)
+
+    assert got == [True] * n
+
+
+def test_replace_removal():
+    """``s.replace("x", "")`` removes every occurrence of the target."""
+    vals = ["axbxc", "xxx", "abc", "x"]
+    expected = [v.replace("x", "") for v in vals]
+    n = len(vals)
+    arr, _keep = _make_mlir_string_array(vals)
+    out, _out_keep = _make_output_mlir_string_array(n)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def produce(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i].replace("x", "")
+
+        produce[1, n](out, arr)
+        got = _verify_strings(out, expected)
+
+    assert got == [True] * n

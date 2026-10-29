@@ -383,6 +383,156 @@ def lower_rstrip(
     return _strip_core(gpu_module, str_view, strip_view, False, True)
 
 
+def lower_replace(
+    gpu_module: ir.Module,
+    src: ir.Value,
+    old: ir.Value,
+    new: ir.Value,
+) -> ir.Value:
+    """``s.replace(old, new)`` -> every non-overlapping ``old`` replaced by ``new``.
+
+    Byte-level substring matching (equivalent to character matching for
+    well-formed UTF-8). Two passes: count occurrences to size the result, then
+    scan-and-copy emitting replacement or source bytes. An empty ``old`` inserts
+    ``new`` around every byte, matching libcudf's replace.
+
+    Parameters
+    ----------
+    gpu_module : ir.Module
+        The GPU module the NRT functions are declared in.
+    src : ir.Value
+        View of the source string's bytes.
+    old : ir.Value
+        View of the substring to replace.
+    new : ir.Value
+        View of the replacement substring.
+
+    Returns
+    -------
+    ir.Value
+        The owned ``mlir_string`` with replacements applied.
+    """
+    i1 = ir.IntegerType.get_signless(1)
+    s_data, o_data, n_data = _view_data(src), _view_data(old), _view_data(new)
+    s_nb = llvm.zext(T.i64(), _view_nbytes(src))
+    o_nb = llvm.zext(T.i64(), _view_nbytes(old))
+    n_nb = llvm.zext(T.i64(), _view_nbytes(new))
+
+    zero = arith.constant(T.i64(), 0)
+    one = arith.constant(T.i64(), 1)
+    false_val = arith.constant(i1, 0)
+    eq = arith.CmpIPredicate.eq
+    ult = arith.CmpIPredicate.ult
+    uge = arith.CmpIPredicate.uge
+
+    target_empty = arith.cmpi(eq, o_nb, zero)
+
+    # --- Pass 1: count non-overlapping occurrences of ``old`` ---
+    long_enough = arith.cmpi(uge, s_nb, o_nb)
+    diff = arith.subi(s_nb, o_nb)
+    search_range = arith.select(long_enough, arith.addi(diff, one), zero)
+
+    count_loop = scf.ForOp(zero, search_range, one, [zero, zero])
+    ci = count_loop.body.arguments[0]
+    c_count = count_loop.body.arguments[1]
+    c_skip = count_loop.body.arguments[2]
+    with ir.InsertionPoint(count_loop.body):
+        c_should_skip = arith.cmpi(ult, ci, c_skip)
+        c_inner = scf.ForOp(zero, o_nb, one, [zero])
+        cj = c_inner.body.arguments[0]
+        cmm = c_inner.body.arguments[1]
+        with ir.InsertionPoint(c_inner.body):
+            c_ne = arith.cmpi(
+                arith.CmpIPredicate.ne,
+                _byte_at(s_data, arith.addi(ci, cj)),
+                _byte_at(o_data, cj),
+            )
+            scf.YieldOp([arith.addi(cmm, arith.extui(T.i64(), c_ne))])
+        c_matches = arith.cmpi(eq, c_inner.results[0], zero)
+        c_valid = arith.andi(
+            c_matches, arith.cmpi(eq, c_should_skip, false_val)
+        )
+        c_new_count = arith.select(c_valid, arith.addi(c_count, one), c_count)
+        c_new_skip = arith.select(c_valid, arith.addi(ci, o_nb), c_skip)
+        scf.YieldOp([c_new_count, c_new_skip])
+
+    occ_count = count_loop.results[0]
+
+    # result_len = s_nb - occ_count * o_nb + occ_count * n_nb
+    result_len = arith.addi(
+        arith.subi(s_nb, arith.muli(occ_count, o_nb)),
+        arith.muli(occ_count, n_nb),
+    )
+
+    mi, out_data = allocate_mlir_string(gpu_module, result_len)
+    scratch_one = llvm.alloca(
+        llvm.PointerType.get(), arith.constant(T.i64(), 1), elem_type=T.i8()
+    )
+
+    # --- Pass 2: scan and copy, emitting replacement and/or source bytes ---
+    build_loop = scf.ForOp(zero, s_nb, one, [zero, zero])
+    si = build_loop.body.arguments[0]
+    out_off = build_loop.body.arguments[1]
+    b_skip = build_loop.body.arguments[2]
+    with ir.InsertionPoint(build_loop.body):
+        active = arith.cmpi(eq, arith.cmpi(ult, si, b_skip), false_val)
+        can_match = arith.cmpi(uge, arith.subi(s_nb, si), o_nb)
+        b_inner = scf.ForOp(zero, o_nb, one, [zero])
+        bj = b_inner.body.arguments[0]
+        bmm = b_inner.body.arguments[1]
+        with ir.InsertionPoint(b_inner.body):
+            # Clamp the source index to the last byte: near the end ``si + bj``
+            # can exceed ``s_nb``; ``can_match`` already gates such positions
+            # out, so the clamped compare only avoids the out-of-bounds read.
+            b_hidx = arith.minui(arith.addi(si, bj), arith.subi(s_nb, one))
+            b_ne = arith.cmpi(
+                arith.CmpIPredicate.ne,
+                _byte_at(s_data, b_hidx),
+                _byte_at(o_data, bj),
+            )
+            scf.YieldOp([arith.addi(bmm, arith.extui(T.i64(), b_ne))])
+        b_match_valid = arith.andi(
+            arith.andi(can_match, arith.cmpi(eq, b_inner.results[0], zero)),
+            active,
+        )
+        nonempty_match = arith.andi(
+            b_match_valid, arith.cmpi(eq, target_empty, false_val)
+        )
+        write_repl = arith.ori(
+            arith.andi(target_empty, active), nonempty_match
+        )
+        write_byte = arith.ori(
+            arith.andi(target_empty, active),
+            arith.andi(arith.cmpi(eq, nonempty_match, false_val), active),
+        )
+
+        len_a = arith.select(write_repl, n_nb, zero)
+        llvm.intr_memcpy(
+            _gep_byte_offset(out_data, out_off), n_data, len_a, False
+        )
+        off_after_a = arith.addi(out_off, len_a)
+
+        llvm.store(_byte_at(s_data, si), scratch_one)
+        len_b = arith.select(write_byte, one, zero)
+        llvm.intr_memcpy(
+            _gep_byte_offset(out_data, off_after_a), scratch_one, len_b, False
+        )
+        new_out_off = arith.addi(off_after_a, len_b)
+        new_skip = arith.select(nonempty_match, arith.addi(si, o_nb), b_skip)
+        scf.YieldOp([new_out_off, new_skip])
+
+    # Empty target: ``new`` is also inserted after the last character.
+    trailing_len = arith.select(target_empty, n_nb, zero)
+    llvm.intr_memcpy(
+        _gep_byte_offset(out_data, build_loop.results[0]),
+        n_data,
+        trailing_len,
+        False,
+    )
+
+    return build_mlir_string(mi, out_data, result_len)
+
+
 def _is_begin_utf8_char(byte_val: ir.Value) -> ir.Value:
     """i1: whether ``byte_val`` is a UTF-8 start byte (top 2 bits != ``10``)."""
     i32 = ir.IntegerType.get_signless(32)

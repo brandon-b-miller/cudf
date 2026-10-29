@@ -4,9 +4,10 @@
 
 Covers ``len`` (UTF-8 character count), the string comparison operators
 (``==``/``!=``/``<``/``<=``/``>``/``>=``), the affix/search/predicate methods,
-``+`` (concatenation), ``strip``/``lstrip``/``rstrip`` and ``s[i]``/``s[a:b]``
-(character indexing and slicing) --- the string-*producing* ops, which allocate
-a new buffer via NRT --- over ``mlir_string``, ``Masked(mlir_string)`` and
+``+`` (concatenation), ``strip``/``lstrip``/``rstrip``, ``s[i]``/``s[a:b]``
+(character indexing and slicing) and ``replace`` --- the string-*producing*
+ops, which allocate a new buffer via NRT --- over ``mlir_string``,
+``Masked(mlir_string)`` and
 string-literal operands; masked operands yield a ``Masked`` result whose validity
 is the AND of the operand validity bits. All lowerings are pure MLIR (see
 :mod:`cudf.core.udf.mlir_backend.string_lowering_impl`). Registered with
@@ -333,6 +334,47 @@ def _make_strip_attr(attrname: str, masked: bool) -> object:
     return resolve
 
 
+def _make_replace_attr(masked: bool) -> object:
+    """Build ``resolve_replace`` for ``s.replace(old, new)`` -> string.
+
+    Parameters
+    ----------
+    masked : bool
+        Whether the receiver is ``Masked(mlir_string)`` (wraps the result).
+
+    Returns
+    -------
+    callable
+        A ``resolve_`` function for the attribute template.
+    """
+    recvr = _masked_string if masked else mlir_string
+
+    class _ReplaceTemplate(AbstractTemplate):
+        key = f"MLIRString.replace.{'m' if masked else 's'}"
+
+        def generic(self, args, kws):
+            """Resolve ``s.replace(old, new)``.
+
+            Both ``old`` and ``new`` are string operands; the result is
+            ``Masked(mlir_string)`` when the receiver or either argument is
+            masked, else ``mlir_string``.
+            """
+            if len(args) != 2 or kws:
+                return None
+            is_masked = (
+                masked
+                or _is_masked_string(args[0])
+                or _is_masked_string(args[1])
+            )
+            result_ty = MaskedType(mlir_string) if is_masked else mlir_string
+            return nb_signature(result_ty, args[0], args[1], recvr=self.this)
+
+    def resolve(self, mod):
+        return types.BoundFunction(_ReplaceTemplate, recvr)
+
+    return resolve
+
+
 @typing_registry.register_attr
 class MLIRStringAttrs(AttributeTemplate):
     """Attribute typing for ``mlir_string`` methods."""
@@ -425,6 +467,10 @@ for _name in _STRIP_METHODS:
         f"resolve_{_name}",
         _make_strip_attr(_name, masked=True),
     )
+setattr(MLIRStringAttrs, "resolve_replace", _make_replace_attr(masked=False))
+setattr(
+    MaskedMLIRStringAttrs, "resolve_replace", _make_replace_attr(masked=True)
+)
 
 
 class ConcatMLIRStringTemplate(AbstractTemplate):
@@ -736,6 +782,30 @@ def _make_lower_strip(impl_fn: object) -> object:
     return _getattr
 
 
+def _make_lower_replace() -> object:
+    """Build the ``lower_getattr`` for ``s.replace(old, new)``.
+
+    Packs a ``Masked`` result when the receiver or either argument is masked;
+    validity is the AND of the three operand validity bits.
+    """
+
+    def _impl_lower(builder, target, args, kwargs):
+        valid_ty = builder.get_mlir_type(types.boolean)
+        true_val = arith.constant(valid_ty, 1)
+        src, vs = _view_and_valid(builder, args[0], true_val)
+        old, vo = _view_and_valid(builder, args[1], true_val)
+        new, vn = _view_and_valid(builder, args[2], true_val)
+        result = _impl.lower_replace(builder.mlir_gpu_module, src, old, new)
+        _store_maybe_masked(
+            builder, target, result, arith.andi(arith.andi(vs, vo), vn)
+        )
+
+    def _getattr(context, builder, target, value, attr=None):
+        builder.store_var(target, DeferredMethodCall(value, _impl_lower))
+
+    return _getattr
+
+
 def _lower_contains_op(
     builder: MLIRLower, target: Var, args: list[Var], kwargs: list
 ) -> None:
@@ -947,6 +1017,16 @@ def _register() -> None:
         strip_getattr = _make_lower_strip(strip_impl)
         lowering_registry.lower_getattr(mlir_string, name)(strip_getattr)
         lowering_registry.lower_getattr(_masked_string, name)(strip_getattr)
+
+    # replace(old, new) -> (masked) mlir_string
+    replace_getattr = _make_lower_replace()
+    lowering_registry.lower_getattr(mlir_string, "replace")(replace_getattr)
+    lowering_registry.lower_getattr(_masked_string, "replace")(replace_getattr)
+
+    # replace(old, new) -> (masked) mlir_string
+    replace_getattr = _make_lower_replace()
+    lowering_registry.lower_getattr(mlir_string, "replace")(replace_getattr)
+    lowering_registry.lower_getattr(_masked_string, "replace")(replace_getattr)
 
 
 _register()
