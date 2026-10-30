@@ -1241,8 +1241,16 @@ def lower_getitem_int(
 
     neg = arith.cmpi(arith.CmpIPredicate.slt, idx_i64, zero)
     idx = arith.select(neg, arith.addi(idx_i64, nchars), idx_i64)
-    start = arith.maxsi(zero, arith.minsi(idx, nchars))
-    stop = arith.minsi(arith.addi(start, one), nchars)
+    # An index still out of range after normalization (below -nchars or
+    # >= nchars) yields an empty string; only an in-range index selects a
+    # character. Clamping with max/min alone would wrongly map a very negative
+    # index to the first character.
+    in_range = arith.andi(
+        arith.cmpi(arith.CmpIPredicate.sge, idx, zero),
+        arith.cmpi(arith.CmpIPredicate.slt, idx, nchars),
+    )
+    start = arith.select(in_range, idx, nchars)
+    stop = arith.select(in_range, arith.addi(idx, one), nchars)
 
     byte_start = _char_to_byte(data, nbytes, start)
     byte_stop = _char_to_byte(data, nbytes, stop)

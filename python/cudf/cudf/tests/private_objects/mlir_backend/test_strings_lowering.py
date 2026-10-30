@@ -1211,6 +1211,77 @@ def test_getitem_out_of_range_is_empty():
     assert got == [True] * n
 
 
+def test_getitem_below_neg_len_is_empty():
+    """An index below ``-len(s)`` yields an empty string, not the first char."""
+    vals = ["abc", "h\u00e9llo", "x\U0001f600y", ""]
+    expected = ["", "", "", ""]
+    n = len(vals)
+    arr, _keep = _make_mlir_string_array(vals)
+    out, _out_keep = _make_output_mlir_string_array(n)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def produce(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i][-99]
+
+        produce[1, n](out, arr)
+        got = _verify_strings(out, expected)
+
+    assert got == [True] * n
+
+
+def test_getitem_neg_len_boundary():
+    """``s[-len(s)]`` returns the first char; ``s[-len(s)-1]`` is empty.
+
+    Uses 3-character strings so a fixed index is ``-len(s)`` / ``-len(s)-1``.
+    """
+    vals = ["abc", "h\u00e9l", "x\U0001f600y"]  # each 3 characters
+    arr, _keep = _make_mlir_string_array(vals)
+    n = len(vals)
+
+    with nrt_enabled(), MLIRNumbaCudaConfig():
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def at_neg_len(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i][-3]
+
+        @cuda.jit(
+            types.void(
+                types.CPointer(mlir_string), types.CPointer(mlir_string)
+            ),
+            extensions=[mlir_string_arg_handler],
+        )
+        def below_neg_len(o, a):
+            i = cuda.grid(1)
+            if i < n:
+                o[i] = a[i][-4]
+
+        out_at, _k1 = _make_output_mlir_string_array(n)
+        out_below, _k2 = _make_output_mlir_string_array(n)
+        at_neg_len[1, n](out_at, arr)
+        below_neg_len[1, n](out_below, arr)
+        got_at = _verify_strings(out_at, [v[-3] for v in vals])
+        got_below = _verify_strings(out_below, ["", "", ""])
+
+    assert got_at == [True] * n
+    assert got_below == [True] * n
+
+
 def test_getitem_slice():
     """``s[1:3]`` returns the character substring (UTF-8 aware)."""
     vals = ["abcde", "h\u00e9llo", "x\U0001f600yz", "ab"]
