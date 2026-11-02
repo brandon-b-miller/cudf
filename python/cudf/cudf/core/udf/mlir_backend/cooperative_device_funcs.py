@@ -442,7 +442,9 @@ def _build_min_module(dtype):
                 acc = partial.body.arguments[1]
                 elem = llvm.load(elem_ty, _gep_typed(data, i, elem_ty))
                 if isinstance(elem_ty, (ir.F64Type, ir.F32Type)):
-                    new_acc = arith.minimumf(acc, elem)
+                    # minnumf: IEEE minimumNumber, skips NaN operands so that
+                    # NaN values are ignored (pandas skipna=True). See #14860.
+                    new_acc = arith.minnumf(acc, elem)
                 else:
                     new_acc = arith.minsi(acc, elem)
                 scf.YieldOp([new_acc])
@@ -467,7 +469,7 @@ def _build_min_module(dtype):
                     my_v = llvm.load(elem_ty, _gep_typed3(shm3, tid, elem_ty))
                     p_v = llvm.load(elem_ty, _gep_typed3(shm3, partner, elem_ty))
                     if isinstance(elem_ty, (ir.F64Type, ir.F32Type)):
-                        reduced = arith.minimumf(my_v, p_v)
+                        reduced = arith.minnumf(my_v, p_v)
                     else:
                         reduced = arith.minsi(my_v, p_v)
                     llvm.store(reduced, _gep_typed3(shm3, tid, elem_ty))
@@ -517,7 +519,9 @@ def _build_max_module(dtype):
                 acc = partial.body.arguments[1]
                 elem = llvm.load(elem_ty, _gep_typed(data, i, elem_ty))
                 if isinstance(elem_ty, (ir.F64Type, ir.F32Type)):
-                    new_acc = arith.maximumf(acc, elem)
+                    # maxnumf: IEEE maximumNumber, skips NaN operands (pandas
+                    # skipna=True). See #14860.
+                    new_acc = arith.maxnumf(acc, elem)
                 else:
                     new_acc = arith.maxsi(acc, elem)
                 scf.YieldOp([new_acc])
@@ -542,7 +546,7 @@ def _build_max_module(dtype):
                     my_v = llvm.load(elem_ty, _gep_typed3(shm3, tid, elem_ty))
                     p_v = llvm.load(elem_ty, _gep_typed3(shm3, partner, elem_ty))
                     if isinstance(elem_ty, (ir.F64Type, ir.F32Type)):
-                        reduced = arith.maximumf(my_v, p_v)
+                        reduced = arith.maxnumf(my_v, p_v)
                     else:
                         reduced = arith.maxsi(my_v, p_v)
                     llvm.store(reduced, _gep_typed3(shm3, tid, elem_ty))

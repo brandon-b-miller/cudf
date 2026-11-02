@@ -1,14 +1,16 @@
-"""Typing for CooperativeArrayType: attributes, binary ops, reductions.
+"""Typing for CooperativeArrayType: reduction attributes.
 
-cusimt owns the CooperativeArrayType and all its operations.
-cudf maps GroupType columns to CooperativeArray views.
+Grouped columns are modelled as ``CooperativeArrayType`` views. Only
+scalar-returning reductions (min/max/sum/mean/var/std/idxmin/idxmax/corr/
+count/size) are supported inside a JIT ``GroupBy.apply`` UDF; operators
+applied directly to a grouped column are rejected (see below).
 """
 
 from __future__ import annotations
 
-import operator
-
+from cudf.core.udf._ops import arith_ops, bitwise_ops, comparison_ops, unary_ops
 from cudf.core.udf.mlir_backend.cooperative_types import CooperativeArrayType
+from cudf.core.udf.utils import UDFError
 from numba_cuda_mlir.extending import typing_registry as registry
 from numba_cuda_mlir.numba_cuda import types
 from numba_cuda_mlir.numba_cuda.typing import signature as nb_signature
@@ -16,6 +18,8 @@ from numba_cuda_mlir.numba_cuda.typing.templates import (
     AbstractTemplate,
     AttributeTemplate,
 )
+
+_UDF_DOC_URL = "https://docs.rapids.ai/api/cudf/stable/cudf/guide-to-udfs/"
 
 
 class CooperativeArray:
@@ -76,14 +80,6 @@ class CoopMaxTemplate(AbstractTemplate):
             return nb_signature(self.this.dtype, recvr=self.this)
 
 
-class CoopExpTemplate(AbstractTemplate):
-    key = "CooperativeArray.exp"
-
-    def generic(self, args, kws):
-        if len(args) == 0 and not kws:
-            return nb_signature(self.this, recvr=self.this)
-
-
 class CoopStdTemplate(AbstractTemplate):
     key = "CooperativeArray.std"
 
@@ -126,9 +122,6 @@ def _make_attrs_class(dtype):
         def resolve_max(self, mod):
             return types.BoundFunction(CoopMaxTemplate, ca_ty)
 
-        def resolve_exp(self, mod):
-            return types.BoundFunction(CoopExpTemplate, ca_ty)
-
         def resolve_std(self, mod):
             return types.BoundFunction(CoopStdTemplate, ca_ty)
 
@@ -144,39 +137,40 @@ for _dt in _SUPPORTED_DTYPES:
     _make_attrs_class(_dt)
 
 
-# ---------------------------------------------------------------------------
-# Binary ops: +, -, * between two CooperativeArrays of matching dtype
-# ---------------------------------------------------------------------------
-
-_BINOPS = (operator.add, operator.sub, operator.mul, operator.truediv)
-
 _ca_f64 = CooperativeArrayType(types.float64)
 
 
-def _make_binop_template(binop):
-    class BinOpTemplate(AbstractTemplate):
-        key = binop
+# ---------------------------------------------------------------------------
+# Unsupported operators on grouped columns.
+#
+# A JIT GroupBy.apply UDF may only produce scalar reduction results. Applying
+# arithmetic, comparison, bitwise, or unary operators directly to a grouped
+# column (e.g. ``group['x'] + group['y']`` or ``-group['x']``) has no scalar
+# meaning and is rejected with a UDFError, matching the legacy backend. The
+# array-returning operators are intentionally not implemented.
+# ---------------------------------------------------------------------------
+
+def _make_unsupported_op_template(op):
+    class UnsupportedCoopOpTemplate(AbstractTemplate):
+        key = op
 
         def generic(self, args, kws):
-            if len(args) != 2 or kws:
+            # Only intercept when a grouped column participates; scalar
+            # operations (e.g. on reduction results) type normally.
+            if not any(isinstance(a, CooperativeArrayType) for a in args):
                 return None
-            a, b = args
-            # array op array
-            if isinstance(a, CooperativeArrayType) and isinstance(b, CooperativeArrayType):
-                if a.dtype == b.dtype:
-                    return nb_signature(a, a, b)
-            # array op scalar
-            if isinstance(a, CooperativeArrayType) and isinstance(b, (types.Integer, types.Float)):
-                return nb_signature(a, a, b)
-            # scalar op array
-            if isinstance(a, (types.Integer, types.Float)) and isinstance(b, CooperativeArrayType):
-                return nb_signature(b, a, b)
+            fname = getattr(op, "__name__", str(op))
+            sr_err = ", ".join("Series" for _ in args)
+            raise UDFError(
+                f"{fname}({sr_err}) is not supported by JIT GroupBy apply. "
+                f"Supported features are listed at: {_UDF_DOC_URL}"
+            )
 
-    return BinOpTemplate
+    return UnsupportedCoopOpTemplate
 
 
-for _op in _BINOPS:
-    registry.register_global(_op)(_make_binop_template(_op))
+for _op in (*arith_ops, *comparison_ops, *bitwise_ops, *unary_ops):
+    registry.register_global(_op)(_make_unsupported_op_template(_op))
 
 
 # ---------------------------------------------------------------------------
