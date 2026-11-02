@@ -1,861 +1,442 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2026, NVIDIA CORPORATION.
 # SPDX-License-Identifier: Apache-2.0
-"""Typing and lowering for ``mlir_string`` operations.
+"""
+MLIR lowering for scalar mlir_string operations.
 
-Covers ``len`` (UTF-8 character count), the string comparison operators
-(``==``/``!=``/``<``/``<=``/``>``/``>=``), the affix/search/predicate methods,
-``+`` (concatenation) and ``strip``/``lstrip``/``rstrip`` --- the
-string-*producing* ops, which allocate a new buffer via NRT --- over
-``mlir_string``, ``Masked(mlir_string)`` and
-string-literal operands; masked operands yield a ``Masked`` result whose validity
-is the AND of the operand validity bits. All lowerings are pure MLIR (see
-:mod:`cudf.core.udf.mlir_backend.string_lowering_impl`). Registered with
-``numba_cuda_mlir`` at import time via :func:`_register`.
+All string operations use pure-MLIR helpers from cudf.core.udf.mlir_backend.string_lowering_impl.
+No C++ shims are required for string UDF operations.
 """
 
 from __future__ import annotations
 
 import operator
-from typing import TYPE_CHECKING
 
-from numba_cuda_mlir import types
-from numba_cuda_mlir._mlir import ir
+from numba_cuda_mlir._mlir import ir as mlir_ir
 from numba_cuda_mlir._mlir.dialects import arith, func, llvm
-from numba_cuda_mlir.extending import lowering_registry, typing_registry
+from numba_cuda_mlir._mlir.extras import types as T
+from numba_cuda_mlir.extending import lower_cast, lowering_registry
+from cudf.core.udf.mlir_backend.string_lowering_impl import (
+    allocate_mlir_string,
+    build_mlir_string,
+    lower_compare,
+    lower_concat,
+    lower_contains,
+    lower_count,
+    lower_endswith,
+    lower_find,
+    lower_isalnum,
+    lower_isalpha,
+    lower_isdecimal,
+    lower_isdigit,
+    lower_islower,
+    lower_isnumeric,
+    lower_isspace,
+    lower_istitle,
+    lower_isupper,
+    lower_len,
+    lower_lower,
+    lower_lstrip,
+    lower_replace,
+    lower_rfind,
+    lower_rstrip,
+    lower_startswith,
+    lower_strip,
+    lower_upper,
+    mlir_string_to_view,
+    ms_extract_data,
+    ms_extract_nbytes,
+    string_getitem_int_core,
+    string_getitem_slice_core,
+)
 from numba_cuda_mlir.lowering_utilities import (
-    GEP_DYNAMIC_INDEX,
     DeferredMethodCall,
-    convert,
     get_or_insert_function,
 )
-from numba_cuda_mlir.numba_cuda.typing.templates import (
-    AbstractTemplate,
-    AttributeTemplate,
-    Signature,
-)
-from numba_cuda_mlir.typing import signature as nb_signature
+from numba_cuda_mlir.numba_cuda import types
 
-from pylibcudf.strings.char_types import get_character_flags_table_ptr
-
-from cudf.core.udf.mlir_backend import string_lowering_impl as _impl
-from cudf.core.udf.mlir_backend.masked_lowering import (
-    _extract_masked_value_valid,
-    _pack_masked,
+from cudf.core.udf.mlir_backend.unicode import (
+    get_character_cases_table_ptr,
+    get_character_flags_table_ptr,
+    get_special_case_mapping_table_ptr,
 )
-from cudf.core.udf.mlir_backend.masked_typing import MaskedType
 from cudf.core.udf.mlir_backend.strings_typing import (
     MLIRStringType,
     NRT_decref,
     mlir_string,
 )
 
-if TYPE_CHECKING:
-    from numba_cuda_mlir.mlir_lowering import MLIRLower
-    from numba_cuda_mlir.numba_cuda.core.ir import Var
+# ---------------------------------------------------------------------------
+# Pure-MLIR helpers
+# ---------------------------------------------------------------------------
 
-# libcudf size_type; the width of a string length result.
-size_type = types.int32
 
-# The single ``Masked(mlir_string)`` instance used as a typing/lowering key.
-_masked_string = MaskedType(mlir_string)
+def lower_len_value(builder, str_view):
+    """len(mlir_string view) -> i32 via pure MLIR."""
+    return lower_len(str_view)
 
-# comparison operator -> the arith.cmpi predicate applied to the signed
-# ``_impl._lower_compare`` result against zero.
-_CMPOP_PREDICATES = {
-    operator.eq: arith.CmpIPredicate.eq,
-    operator.ne: arith.CmpIPredicate.ne,
-    operator.lt: arith.CmpIPredicate.slt,
-    operator.le: arith.CmpIPredicate.sle,
-    operator.gt: arith.CmpIPredicate.sgt,
-    operator.ge: arith.CmpIPredicate.sge,
-}
 
-# Operand-type combinations each comparison lowering is registered for
-# (plain-plain, plain-literal and the masked variants).
-_STR_COMBOS = (
-    (MLIRStringType, MLIRStringType),
-    (MLIRStringType, types.StringLiteral),
-    (types.StringLiteral, MLIRStringType),
-    (_masked_string, _masked_string),
-    (_masked_string, types.StringLiteral),
-    (types.StringLiteral, _masked_string),
-    (_masked_string, MLIRStringType),
-    (MLIRStringType, _masked_string),
-)
-
-# affix method name -> its pure-MLIR impl (one string arg -> boolean).
-_BOOL_METHODS = {
-    "startswith": _impl._lower_startswith,
-    "endswith": _impl._lower_endswith,
-}
-
-# search method name -> its pure-MLIR impl (one string arg -> int32).
-_INT_METHODS = {
-    "find": _impl._lower_find,
-    "rfind": _impl._lower_rfind,
-    "count": _impl._lower_count,
-}
-
-# strip method name -> its pure-MLIR impl (optional chars arg -> mlir_string).
-_STRIP_METHODS = {
-    "strip": _impl.lower_strip,
-    "lstrip": _impl.lower_lstrip,
-    "rstrip": _impl.lower_rstrip,
-}
-
-# character-class predicate method name -> its pure-MLIR impl (no arg -> bool).
-_IS_METHODS = {
-    "isalpha": _impl._lower_isalpha,
-    "isalnum": _impl._lower_isalnum,
-    "isdecimal": _impl._lower_isdecimal,
-    "isdigit": _impl._lower_isdigit,
-    "isupper": _impl._lower_isupper,
-    "islower": _impl._lower_islower,
-    "isspace": _impl._lower_isspace,
-    "isnumeric": _impl._lower_isnumeric,
-    "istitle": _impl._lower_istitle,
+_MLIR_IS_FUNCS = {
+    "isupper": lower_isupper,
+    "islower": lower_islower,
+    "isalpha": lower_isalpha,
+    "isalnum": lower_isalnum,
+    "isdecimal": lower_isdecimal,
+    "isdigit": lower_isdigit,
+    "isspace": lower_isspace,
+    "isnumeric": lower_isnumeric,
+    "istitle": lower_istitle,
 }
 
 
-def _is_plain_string(ty: types.Type) -> bool:
-    """Whether ``ty`` is an ``mlir_string`` or a compile-time string literal."""
-    return isinstance(ty, (MLIRStringType, types.StringLiteral))
-
-
-def _is_masked_string(ty: types.Type) -> bool:
-    """Whether ``ty`` is a ``Masked(mlir_string)``."""
-    return isinstance(ty, MaskedType) and isinstance(
-        ty.value_type, MLIRStringType
-    )
-
-
-def _is_string_arg(ty: types.Type) -> bool:
-    """Whether ``ty`` is any string operand: plain, literal or masked."""
-    return _is_plain_string(ty) or _is_masked_string(ty)
-
-
-class LenMLIRStringTemplate(AbstractTemplate):
-    """``len`` over strings.
-
-    ``len(mlir_string)`` -> ``int32`` (UTF-8 character count), and
-    ``len(Masked(mlir_string))`` -> ``Masked(int32)`` (validity carried from the
-    operand). ``int32`` matches libcudf's ``size_type`` for string lengths.
-    """
-
-    key = len
-
-    def generic(
-        self, args: tuple[types.Type, ...], kws: dict
-    ) -> Signature | None:
-        """Resolve ``len`` over a (masked) ``mlir_string``.
-
-        Parameters
-        ----------
-        args : tuple of types.Type
-            Positional argument types.
-        kws : dict
-            Keyword argument types (must be empty).
-
-        Returns
-        -------
-        Signature or None
-            ``int32`` for a bare ``mlir_string``, ``Masked(int32)`` for a
-            ``Masked(mlir_string)``, else ``None``.
-        """
-        if len(args) != 1 or kws:
-            return None
-        arg = args[0]
-        if isinstance(arg, MLIRStringType):
-            return nb_signature(size_type, mlir_string)
-        if _is_masked_string(arg):
-            return nb_signature(MaskedType(size_type), arg)
-        return None
-
-
-def _make_cmpop_template(cmpop: object) -> type[AbstractTemplate]:
-    """Build the typing template for a string comparison operator.
-
-    Parameters
-    ----------
-    cmpop : object
-        The comparison operator (e.g. ``operator.eq``).
-
-    Returns
-    -------
-    type
-        An ``AbstractTemplate`` subclass resolving the operator to ``boolean``
-        (all-plain operands) or ``Masked(boolean)`` (any masked operand).
-    """
-
-    class _CmpOpTemplate(AbstractTemplate):
-        key = cmpop
-
-        def generic(self, args, kws):
-            """Resolve ``a <cmp> b`` for string operands."""
-            if len(args) != 2 or kws:
-                return None
-            a, b = args
-            if not (_is_string_arg(a) and _is_string_arg(b)):
-                return None
-            if _is_masked_string(a) or _is_masked_string(b):
-                return nb_signature(MaskedType(types.boolean), a, b)
-            if isinstance(a, MLIRStringType) or isinstance(b, MLIRStringType):
-                return nb_signature(types.boolean, a, b)
-            return None
-
-    return _CmpOpTemplate
-
-
-def _make_is_attr(attrname: str, masked: bool) -> object:
-    """Build a ``resolve_<isX>`` for a no-argument predicate method.
-
-    Parameters
-    ----------
-    attrname : str
-        Predicate name (e.g. ``"isalpha"``).
-    masked : bool
-        Whether the receiver is ``Masked(mlir_string)`` (wraps the result).
-
-    Returns
-    -------
-    callable
-        A ``resolve_`` function for the attribute template.
-    """
-    result_ty = MaskedType(types.boolean) if masked else types.boolean
-    recvr = _masked_string if masked else mlir_string
-
-    class _IsTemplate(AbstractTemplate):
-        key = f"MLIRString.{attrname}.{'m' if masked else 's'}"
-
-        def generic(self, args, kws):
-            """Resolve ``s.<isX>()`` -> ``boolean`` / ``Masked(boolean)``."""
-            if not args and not kws:
-                return nb_signature(result_ty, recvr=self.this)
-            return None
-
-    def resolve(self, mod):
-        return types.BoundFunction(_IsTemplate, recvr)
-
-    return resolve
-
-
-def _make_method_attr(
-    attrname: str, retty: types.Type, masked: bool
-) -> object:
-    """Build a ``resolve_<method>`` for a one-string-arg method.
-
-    Parameters
-    ----------
-    attrname : str
-        Method name (e.g. ``"startswith"``).
-    retty : types.Type
-        The unmasked return type.
-    masked : bool
-        Whether the receiver is ``Masked(mlir_string)`` (wraps the result).
-
-    Returns
-    -------
-    callable
-        A ``resolve_`` function for the attribute template.
-    """
-    recvr = _masked_string if masked else mlir_string
-
-    class _MethodTemplate(AbstractTemplate):
-        key = f"MLIRString.{attrname}.{'m' if masked else 's'}"
-
-        def generic(self, args, kws):
-            """Resolve ``s.<method>(other)`` for a string ``other``.
-
-            The result is ``Masked`` when *either* the receiver or the argument
-            is masked, so an invalid argument never yields a valid plain result.
-            The argument's string-ness is not gated here: a ``StringLiteral``
-            argument isn't recognized by ``isinstance`` inside a ``BoundFunction``
-            template, and the lowering handles the operand kinds.
-            """
-            if len(args) == 1 and not kws:
-                result_ty = (
-                    MaskedType(retty)
-                    if masked or _is_masked_string(args[0])
-                    else retty
-                )
-                return nb_signature(result_ty, args[0], recvr=self.this)
-            return None
-
-    def resolve(self, mod):
-        return types.BoundFunction(_MethodTemplate, recvr)
-
-    return resolve
-
-
-def _make_strip_attr(attrname: str, masked: bool) -> object:
-    """Build a ``resolve_<strip>`` for an optional-arg method returning a string.
-
-    Parameters
-    ----------
-    attrname : str
-        Method name (``"strip"``/``"lstrip"``/``"rstrip"``).
-    masked : bool
-        Whether the receiver is ``Masked(mlir_string)`` (wraps the result).
-
-    Returns
-    -------
-    callable
-        A ``resolve_`` function for the attribute template.
-    """
-    recvr = _masked_string if masked else mlir_string
-
-    class _StripTemplate(AbstractTemplate):
-        key = f"MLIRString.{attrname}.{'m' if masked else 's'}"
-
-        def generic(self, args, kws):
-            """Resolve ``s.strip()`` / ``s.strip(chars)``.
-
-            Zero args (whitespace mode) or one string arg (chars set); the
-            result is ``Masked(mlir_string)`` when the receiver or the argument
-            is masked, else ``mlir_string``.
-            """
-            if kws or len(args) > 1:
-                return None
-            arg_masked = len(args) == 1 and _is_masked_string(args[0])
-            result_ty = (
-                MaskedType(mlir_string)
-                if masked or arg_masked
-                else mlir_string
-            )
-            if len(args) == 0:
-                return nb_signature(result_ty, recvr=self.this)
-            return nb_signature(result_ty, args[0], recvr=self.this)
-
-    def resolve(self, mod):
-        return types.BoundFunction(_StripTemplate, recvr)
-
-    return resolve
-
-
-@typing_registry.register_attr
-class MLIRStringAttrs(AttributeTemplate):
-    """Attribute typing for ``mlir_string`` methods."""
-
-    key = mlir_string
-
-
-@typing_registry.register_attr
-class MaskedMLIRStringAttrs(AttributeTemplate):
-    """Attribute typing for ``Masked(mlir_string)``.
-
-    An instance-keyed attribute template shadows the class-keyed
-    :class:`MaskedTypeAttrs`, and numba resolves ``resolve_*`` only from the
-    template's own class, so ``.value``/``.valid`` are redefined here alongside
-    the string methods.
-    """
-
-    key = _masked_string
-
-    def resolve_value(self, typ: MaskedType) -> types.Type:
-        """Resolve ``Masked(mlir_string).value``.
-
-        Parameters
-        ----------
-        typ : MaskedType
-            The ``Masked(mlir_string)`` receiver type.
-
-        Returns
-        -------
-        types.Type
-            The wrapped value type (``mlir_string``).
-        """
-        return typ.value_type
-
-    def resolve_valid(self, typ: MaskedType) -> types.Type:
-        """Resolve ``Masked(mlir_string).valid``.
-
-        Parameters
-        ----------
-        typ : MaskedType
-            The ``Masked(mlir_string)`` receiver type.
-
-        Returns
-        -------
-        types.Type
-            ``boolean``.
-        """
-        return types.boolean
-
-
-for _name in _BOOL_METHODS:
-    setattr(
-        MLIRStringAttrs,
-        f"resolve_{_name}",
-        _make_method_attr(_name, types.boolean, masked=False),
-    )
-    setattr(
-        MaskedMLIRStringAttrs,
-        f"resolve_{_name}",
-        _make_method_attr(_name, types.boolean, masked=True),
-    )
-for _name in _INT_METHODS:
-    setattr(
-        MLIRStringAttrs,
-        f"resolve_{_name}",
-        _make_method_attr(_name, size_type, masked=False),
-    )
-    setattr(
-        MaskedMLIRStringAttrs,
-        f"resolve_{_name}",
-        _make_method_attr(_name, size_type, masked=True),
-    )
-for _name in _IS_METHODS:
-    setattr(
-        MLIRStringAttrs, f"resolve_{_name}", _make_is_attr(_name, masked=False)
-    )
-    setattr(
-        MaskedMLIRStringAttrs,
-        f"resolve_{_name}",
-        _make_is_attr(_name, masked=True),
-    )
-for _name in _STRIP_METHODS:
-    setattr(
-        MLIRStringAttrs,
-        f"resolve_{_name}",
-        _make_strip_attr(_name, masked=False),
-    )
-    setattr(
-        MaskedMLIRStringAttrs,
-        f"resolve_{_name}",
-        _make_strip_attr(_name, masked=True),
-    )
-
-
-class ConcatMLIRStringTemplate(AbstractTemplate):
-    """``a + b`` (``operator.add``) over (masked) strings.
-
-    Produces a newly allocated ``mlir_string`` (``Masked(mlir_string)`` when
-    either operand is masked, with validity the AND of the operand bits). At
-    least one operand must be a real ``mlir_string``; two literals are not
-    concatenated here.
-    """
-
-    key = operator.add
-
-    def generic(
-        self, args: tuple[types.Type, ...], kws: dict
-    ) -> Signature | None:
-        """Resolve ``a + b`` for string operands.
-
-        Parameters
-        ----------
-        args : tuple of types.Type
-            ``(lhs, rhs)`` types.
-        kws : dict
-            Keyword argument types (must be empty).
-
-        Returns
-        -------
-        Signature or None
-            ``mlir_string`` (all-plain) or ``Masked(mlir_string)`` (any masked),
-            else ``None``.
-        """
-        if len(args) != 2 or kws:
-            return None
-        a, b = args
-        if not (_is_string_arg(a) and _is_string_arg(b)):
-            return None
-        if _is_masked_string(a) or _is_masked_string(b):
-            return nb_signature(MaskedType(mlir_string), a, b)
-        if isinstance(a, MLIRStringType) or isinstance(b, MLIRStringType):
-            return nb_signature(mlir_string, a, b)
-        return None
-
-
-class ContainsMLIRStringTemplate(AbstractTemplate):
-    """``item in container`` (``operator.contains``) over (masked) strings."""
-
-    key = operator.contains
-
-    def generic(
-        self, args: tuple[types.Type, ...], kws: dict
-    ) -> Signature | None:
-        """Resolve ``operator.contains`` for string operands.
-
-        Parameters
-        ----------
-        args : tuple of types.Type
-            ``(container, item)`` types.
-        kws : dict
-            Keyword argument types (must be empty).
-
-        Returns
-        -------
-        Signature or None
-            ``boolean`` (all-plain) or ``Masked(boolean)`` (any masked), else
-            ``None``.
-        """
-        if len(args) != 2 or kws:
-            return None
-        a, b = args
-        if not (_is_string_arg(a) and _is_string_arg(b)):
-            return None
-        if _is_masked_string(a) or _is_masked_string(b):
-            return nb_signature(MaskedType(types.boolean), a, b)
-        if isinstance(a, MLIRStringType) or isinstance(b, MLIRStringType):
-            return nb_signature(types.boolean, a, b)
-        return None
-
-
-def _lower_len(
-    builder: MLIRLower, target: Var, args: list[Var], kwargs: list
-) -> None:
-    """``len(mlir_string)``: count UTF-8 characters, returned as ``int32``."""
-    view = _impl._mlir_string_to_view(builder.load_var(args[0]))
-    builder.store_var(target, _impl._lower_len(view))
-
-
-def _lower_masked_len(
-    builder: MLIRLower, target: Var, args: list[Var], kwargs: list
-) -> None:
-    """``len(Masked(mlir_string))``: character count packed with the operand's
-    validity bit (``Masked(int32)``).
-
-    The payload is scanned unconditionally; this is safe because null rows carry
-    ``nbytes == 0`` (the marshaller leaves a null ``data`` pointer with zero
-    length), so the count loop never dereferences ``data`` for a null row. The
-    resulting count is discarded anyway when ``m_valid`` is false.
-    """
-    m = builder.load_var(args[0])
-    st = llvm.StructType(m.type)
-    ms_val, m_valid = _extract_masked_value_valid(m, st.body[0], st.body[1])
-    count = _impl._lower_len(_impl._mlir_string_to_view(ms_val))
-    target_type = builder.get_numba_type(target.name)
-    packed = _pack_masked(builder, target_type, count, m_valid)
-    builder.store_var(target, packed)
-
-
-def _literal_to_view(builder: MLIRLower, literal_var: Var) -> ir.Value:
-    """Materialize a ``StringLiteral`` as a view ``{ptr, i32 nbytes, i32 len}``.
-
-    ``builder.load_var`` yields numba-cuda-mlir's materialized unicode struct
-    (``{ptr data, i64 length, ...}``); field 0 is the byte-buffer pointer. Only
-    ASCII literals are currently supported: for ASCII that buffer is
-    byte-identical to UTF-8, so it compares correctly against ``mlir_string``
-    (which stores UTF-8). Non-ASCII string literals are presently rejected
-    upstream by numba-cuda-mlir's string-constant materialization, so no explicit
-    guard is added here.
-    """
-    literal_value = builder.get_numba_type(literal_var.name).literal_value
-    data_struct = builder.load_var(literal_var)
-    ptr_ty = llvm.PointerType.get()
-    i32 = ir.IntegerType.get_signless(32)
-    view_ty = llvm.StructType.get_literal([ptr_ty, i32, i32])
-    val = llvm.UndefOp(view_ty)
-    val = llvm.insertvalue(
-        container=val,
-        value=llvm.extractvalue(ptr_ty, data_struct, [0]),
-        position=ir.DenseI64ArrayAttr.get([0]),
-    )
-    val = llvm.insertvalue(
-        container=val,
-        value=arith.constant(i32, len(literal_value.encode("utf-8"))),
-        position=ir.DenseI64ArrayAttr.get([1]),
-    )
-    return llvm.insertvalue(
-        container=val,
-        value=arith.constant(i32, len(literal_value)),
-        position=ir.DenseI64ArrayAttr.get([2]),
-    )
-
-
-def _view_and_valid(
-    builder: MLIRLower, var: Var, true_val: ir.Value
-) -> tuple[ir.Value, ir.Value]:
-    """``(view, valid)`` for a string operand var (plain, literal or masked).
-
-    Non-masked operands report validity ``true_val``; a ``Masked(mlir_string)``
-    reports its stored validity bit.
-    """
-    ty = builder.get_numba_type(var.name)
-    if isinstance(ty, types.StringLiteral):
-        return _literal_to_view(builder, var), true_val
-    val = builder.load_var(var)
-    if _is_masked_string(ty):
-        st = llvm.StructType(val.type)
-        ms_val, valid = _extract_masked_value_valid(
-            val, st.body[0], st.body[1]
-        )
-        return _impl._mlir_string_to_view(ms_val), valid
-    return _impl._mlir_string_to_view(val), true_val
-
-
-def _store_maybe_masked(
-    builder: MLIRLower, target: Var, result: ir.Value, valid: ir.Value
-) -> None:
-    """Store ``result`` at ``target``, packing a ``Masked`` value if required."""
-    target_type = builder.get_numba_type(target.name)
-    if isinstance(target_type, MaskedType):
-        builder.store_var(
-            target, _pack_masked(builder, target_type, result, valid)
-        )
-    else:
-        builder.store_var(target, result)
-
-
-def _make_lower_cmpop(predicate: arith.CmpIPredicate) -> object:
-    """Build a comparison lowering for the given ``cmpi`` predicate.
-
-    The lowering handles plain, literal and masked operands uniformly and packs
-    a ``Masked`` result when the target is masked.
-
-    Parameters
-    ----------
-    predicate : arith.CmpIPredicate
-        Predicate applied to the signed compare result against zero.
-
-    Returns
-    -------
-    callable
-        A lowering ``(builder, target, args, kwargs) -> None``.
-    """
-
-    def _lower(builder, target, args, kwargs):
-        valid_ty = builder.get_mlir_type(types.boolean)
-        true_val = arith.constant(valid_ty, 1)
-        lhs, vl = _view_and_valid(builder, args[0], true_val)
-        rhs, vr = _view_and_valid(builder, args[1], true_val)
-        zero = arith.constant(ir.IntegerType.get_signless(32), 0)
-        result = arith.cmpi(predicate, _impl._lower_compare(lhs, rhs), zero)
-        _store_maybe_masked(builder, target, result, arith.andi(vl, vr))
-
-    return _lower
-
-
-def _make_lower_binary(impl_fn: object) -> object:
-    """Build the ``lower_getattr`` for a one-string-arg method (startswith/endswith).
-
-    The returned getattr defers to a method lowering that handles plain, literal
-    and masked operands uniformly and packs a ``Masked`` result when required.
-    """
-
-    def _impl_lower(builder, target, args, kwargs):
-        valid_ty = builder.get_mlir_type(types.boolean)
-        true_val = arith.constant(valid_ty, 1)
-        recv, vr = _view_and_valid(builder, args[0], true_val)
-        other, vo = _view_and_valid(builder, args[1], true_val)
-        result = impl_fn(recv, other)
-        _store_maybe_masked(builder, target, result, arith.andi(vr, vo))
-
-    def _getattr(context, builder, target, value, attr=None):
-        builder.store_var(target, DeferredMethodCall(value, _impl_lower))
-
-    return _getattr
-
-
-def _flags_table_ptr_const() -> ir.Value:
-    """MLIR pointer constant for the libcudf character-flags device table."""
+def _flags_table_ptr_const():
+    """Return an MLIR ptr to the character flags table (device pointer)."""
     addr = int(get_character_flags_table_ptr())
+    i64 = mlir_ir.IntegerType.get_signless(64)
     if addr >= (1 << 63):
         addr -= 1 << 64
-    i64 = ir.IntegerType.get_signless(64)
     return llvm.inttoptr(llvm.PointerType.get(), arith.constant(i64, addr))
 
 
-def _make_lower_is(impl_fn: object) -> object:
-    """Build the ``lower_getattr`` for a no-arg predicate method (isalpha ...)."""
-
-    def _impl_lower(builder, target, args, kwargs):
-        valid_ty = builder.get_mlir_type(types.boolean)
-        true_val = arith.constant(valid_ty, 1)
-        view, valid = _view_and_valid(builder, args[0], true_val)
-        result = impl_fn(view, _flags_table_ptr_const())
-        _store_maybe_masked(builder, target, result, valid)
-
-    def _getattr(context, builder, target, value, attr=None):
-        builder.store_var(target, DeferredMethodCall(value, _impl_lower))
-
-    return _getattr
+def lower_is_xyz_value(builder, str_view, mlir_fn):
+    """mlir_string.isXyz() -> i1 via pure MLIR."""
+    return mlir_fn(str_view, _flags_table_ptr_const())
 
 
-def _make_lower_strip(impl_fn: object) -> object:
-    """Build the ``lower_getattr`` for a strip method (optional chars arg).
+_CMPOP_PREDICATES = {
+    "eq": arith.CmpIPredicate.eq,
+    "ne": arith.CmpIPredicate.ne,
+    "lt": arith.CmpIPredicate.slt,
+    "le": arith.CmpIPredicate.sle,
+    "gt": arith.CmpIPredicate.sgt,
+    "ge": arith.CmpIPredicate.sge,
+}
+_CMPOP_NAMES = tuple(_CMPOP_PREDICATES.keys())
 
-    With no argument the strip set is empty (whitespace mode); with one string
-    argument the argument supplies the strip set. A ``Masked`` result is packed
-    when the receiver or the argument is masked.
-    """
+_BOOL_STR_STR_OPS = {
+    "startswith": lower_startswith,
+    "endswith": lower_endswith,
+    "contains": lower_contains,
+}
 
-    def _impl_lower(builder, target, args, kwargs):
-        valid_ty = builder.get_mlir_type(types.boolean)
-        true_val = arith.constant(valid_ty, 1)
-        recv, vr = _view_and_valid(builder, args[0], true_val)
-        if len(args) == 2:
-            strip_view, vo = _view_and_valid(builder, args[1], true_val)
-            valid = arith.andi(vr, vo)
-        else:
-            strip_view = _impl._empty_view()
-            valid = vr
-        result = impl_fn(builder.mlir_gpu_module, recv, strip_view)
-        _store_maybe_masked(builder, target, result, valid)
-
-    def _getattr(context, builder, target, value, attr=None):
-        builder.store_var(target, DeferredMethodCall(value, _impl_lower))
-
-    return _getattr
+_INT_STR_STR_OPS = {
+    "find": lower_find,
+    "rfind": lower_rfind,
+    "count": lower_count,
+}
 
 
-def _lower_contains_op(
-    builder: MLIRLower, target: Var, args: list[Var], kwargs: list
-) -> None:
-    """``item in container`` -> ``boolean`` / ``Masked(boolean)``."""
-    valid_ty = builder.get_mlir_type(types.boolean)
-    true_val = arith.constant(valid_ty, 1)
-    container, vc = _view_and_valid(builder, args[0], true_val)
-    item, vi = _view_and_valid(builder, args[1], true_val)
-    result = _impl._lower_contains(container, item)
-    _store_maybe_masked(builder, target, result, arith.andi(vc, vi))
+def call_string_cmpop_mlir(lhs, rhs, op_name):
+    """Pure MLIR string compare -> i1."""
+    cmp_result = lower_compare(lhs, rhs)
+    zero = arith.constant(mlir_ir.IntegerType.get_signless(32), 0)
+    return arith.cmpi(_CMPOP_PREDICATES[op_name], cmp_result, zero)
 
 
-def _lower_concat_op(
-    builder: MLIRLower, target: Var, args: list[Var], kwargs: list
-) -> None:
-    """``a + b`` -> newly allocated ``mlir_string`` / ``Masked(mlir_string)``.
-
-    The result buffer is allocated via NRT (see
-    :func:`string_lowering_impl.lower_concat`); numba's reference counting then
-    owns and eventually frees it.
-    """
-    valid_ty = builder.get_mlir_type(types.boolean)
-    true_val = arith.constant(valid_ty, 1)
-    lhs, vl = _view_and_valid(builder, args[0], true_val)
-    rhs, vr = _view_and_valid(builder, args[1], true_val)
-    result = _impl.lower_concat(builder.mlir_gpu_module, lhs, rhs)
-    _store_maybe_masked(builder, target, result, arith.andi(vl, vr))
+def call_string_bool_str_str_mlir(lhs, rhs, op_name):
+    """Pure MLIR (startswith/endswith/contains) -> i1."""
+    return _BOOL_STR_STR_OPS[op_name](lhs, rhs)
 
 
-class NRTDecrefMLIRStringTemplate(AbstractTemplate):
-    """``NRT_decref(mlir_string)`` -> ``void`` (release one reference)."""
-
-    key = NRT_decref
-
-    def generic(
-        self, args: tuple[types.Type, ...], kws: dict
-    ) -> Signature | None:
-        """Resolve ``NRT_decref(mlir_string)``.
-
-        Parameters
-        ----------
-        args : tuple of types.Type
-            A single ``mlir_string`` argument.
-        kws : dict
-            Keyword argument types (must be empty).
-
-        Returns
-        -------
-        Signature or None
-            ``void(mlir_string)``, else ``None``.
-        """
-        if len(args) == 1 and not kws and isinstance(args[0], MLIRStringType):
-            return nb_signature(types.void, mlir_string)
-        return None
+def call_string_int_str_str_mlir(lhs, rhs, op_name):
+    """Pure MLIR (find/rfind/count) -> i32."""
+    return _INT_STR_STR_OPS[op_name](lhs, rhs)
 
 
-def _lower_nrt_decref(
-    builder: MLIRLower, target: Var, args: list[Var], kwargs: list
-) -> None:
-    """``NRT_decref(s)``: drop one reference on ``s``'s ``MemInfo``.
+# ---------------------------------------------------------------------------
+# Var-to-view SSA helpers (internal MLIR value, not a Numba type)
+# ---------------------------------------------------------------------------
 
-    When the count reaches zero the varsize destructor frees the buffer (a
-    no-op under the arena allocator).
-    """
-    ms_val = builder.load_var(args[0])
+
+def _literal_to_view(builder, literal_var):
+    """Materialize a StringLiteral as a view SSA value {ptr, i32, i32}."""
+    literal_ty = builder.get_numba_type(literal_var.name)
+    if not isinstance(literal_ty, types.StringLiteral):
+        raise TypeError("expects StringLiteral variable")
+    literal_value = literal_ty.literal_value
+    data_ptr = builder.load_var(literal_var)
+
     ptr_ty = llvm.PointerType.get()
-    meminfo = llvm.extractvalue(ptr_ty, ms_val, [0])
-    decref_ty = ir.FunctionType.get([ptr_ty], [])
-    callee = get_or_insert_function(
-        "NRT_decref", decref_ty, builder.mlir_gpu_module
+    i32 = mlir_ir.IntegerType.get_signless(32)
+    sv_ty = llvm.StructType.get_literal([ptr_ty, i32, i32])
+    bytes_val = len(literal_value.encode("UTF-8"))
+    length_val = len(literal_value)
+    undef = llvm.UndefOp(sv_ty)
+    with_data = llvm.insertvalue(
+        container=undef,
+        value=llvm.extractvalue(ptr_ty, data_ptr, [0]),
+        position=mlir_ir.DenseI64ArrayAttr.get([0]),
     )
-    func.call(result=[], callee=callee.name.value, operands_=[meminfo])
-
-
-def _lower_setitem_cpointer_mlir_string(
-    builder: MLIRLower, target: Var, args: list[Var], kwargs: list
-) -> None:
-    """``out[i] = s`` for ``out: CPointer(mlir_string)``, ``s: mlir_string``.
-
-    Stores the value struct into the output array and increfs its ``MemInfo``,
-    so the produced string survives past the kernel (the numba-inserted decref
-    of the local at scope exit would otherwise free it). This is how a
-    string-returning UDF marshals its result into the output buffer.
-    """
-    ptr, idx, val = (builder.load_var(a) for a in args)
-    ptr_ty = llvm.PointerType.get()
-    ms_ty = builder.get_mlir_type(mlir_string)
-    idx_i64 = convert(idx, ir.IntegerType.get_signless(64))
-    elem_ptr = llvm.getelementptr(
-        ptr_ty, ptr, [idx_i64], [GEP_DYNAMIC_INDEX], ms_ty, None
+    with_bytes = llvm.insertvalue(
+        container=with_data,
+        value=arith.constant(i32, bytes_val),
+        position=mlir_ir.DenseI64ArrayAttr.get([1]),
     )
-    llvm.store(value=val, addr=elem_ptr)
-    meminfo = llvm.extractvalue(ptr_ty, val, [0])
-    incref_ty = ir.FunctionType.get([ptr_ty], [])
-    callee = get_or_insert_function(
-        "NRT_incref", incref_ty, builder.mlir_gpu_module
+    return llvm.insertvalue(
+        container=with_bytes,
+        value=arith.constant(i32, length_val),
+        position=mlir_ir.DenseI64ArrayAttr.get([2]),
     )
-    func.call(result=[], callee=callee.name.value, operands_=[meminfo])
 
 
-def _register() -> None:
-    """Register string op typing and lowering with ``numba_cuda_mlir``."""
-    typing_registry.register_global(len)(LenMLIRStringTemplate)
-    lowering_registry.lower(len, mlir_string)(_lower_len)
-    lowering_registry.lower(len, MaskedType)(_lower_masked_len)
+def _any_var_to_view(builder, var):
+    """Convert any string-typed variable to a view SSA value."""
+    numba_ty = builder.get_numba_type(var.name)
+    if isinstance(numba_ty, types.StringLiteral):
+        return _literal_to_view(builder, var)
+    val = builder.load_var(var)
+    if isinstance(numba_ty, MLIRStringType):
+        return mlir_string_to_view(val)
+    return val
 
-    for cmp_op, predicate in _CMPOP_PREDICATES.items():
-        typing_registry.register_global(cmp_op)(_make_cmpop_template(cmp_op))
-        impl = _make_lower_cmpop(predicate)
-        for lhs_ty, rhs_ty in _STR_COMBOS:
-            lowering_registry.lower(cmp_op, lhs_ty, rhs_ty)(impl)
 
-    # ``in`` (substring membership)
-    typing_registry.register_global(operator.contains)(
-        ContainsMLIRStringTemplate
-    )
-    for lhs_ty, rhs_ty in _STR_COMBOS:
-        lowering_registry.lower(operator.contains, lhs_ty, rhs_ty)(
-            _lower_contains_op
+def _i64_const_from_ptr(addr):
+    """Create an i64 constant from a host pointer address (for lookup tables)."""
+    i64 = mlir_ir.IntegerType.get_signless(64)
+    if addr >= (1 << 63):
+        addr -= 1 << 64
+    return arith.constant(i64, addr)
+
+
+# ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
+
+def _register():
+    lower = lowering_registry.lower
+    lower_getattr = lowering_registry.lower_getattr
+
+    # === NRT_decref ===
+
+    def _lower_nrt_decref_mlir_string(builder, target, args, kwargs):
+        ms_val = builder.load_var(args[0])
+        meminfo = llvm.extractvalue(llvm.PointerType.get(), ms_val, [0])
+        nrt_decref_ty = mlir_ir.FunctionType.get([llvm.PointerType.get()], [])
+        callee = get_or_insert_function(
+            "NRT_decref",
+            nrt_decref_ty,
+            builder.mlir_gpu_module,
+        )
+        func.call(result=[], callee=callee.name.value, operands_=[meminfo])
+
+    lower(NRT_decref, mlir_string)(_lower_nrt_decref_mlir_string)
+
+    # === Cast: StringLiteral -> mlir_string ===
+
+    @lower_cast(types.StringLiteral, mlir_string)
+    def cast_string_literal_to_mlir_string(
+        context, builder, fromty, toty, val
+    ):
+        """Copy literal string bytes into an NRT-managed mlir_string."""
+        literal_value = fromty.literal_value
+        nbytes = len(literal_value.encode("UTF-8"))
+        i64 = mlir_ir.IntegerType.get_signless(64)
+        nbytes_i64 = arith.constant(i64, nbytes)
+        data = llvm.extractvalue(llvm.PointerType.get(), val, [0])
+        mi, out_data = allocate_mlir_string(
+            builder.mlir_gpu_module, nbytes_i64
+        )
+        llvm.intr_memcpy(out_data, data, nbytes_i64, False)
+        return build_mlir_string(mi, out_data, nbytes_i64)
+
+    # === mlir_string methods ===
+
+    def _load_as_view(builder, var):
+        """Load a mlir_string var, convert to view SSA value."""
+        return mlir_string_to_view(builder.load_var(var))
+
+    def _make_lower_is(mlir_fn):
+        def _lower_impl(builder, target, args, kwargs):
+            str_view = _load_as_view(builder, args[0])
+            result = lower_is_xyz_value(builder, str_view, mlir_fn)
+            builder.store_var(target, result)
+
+        def _getattr(context, builder, target, value, attr=None):
+            builder.store_var(target, DeferredMethodCall(value, _lower_impl))
+
+        return _getattr
+
+    for attrname, mlir_fn in _MLIR_IS_FUNCS.items():
+        lower_getattr(mlir_string, attrname)(_make_lower_is(mlir_fn))
+
+    def _make_lower_binary_int(op_name):
+        def _lower_impl(builder, target, args, kwargs):
+            lhs = _load_as_view(builder, args[0])
+            rhs = _any_var_to_view(builder, args[1])
+            result = call_string_int_str_str_mlir(lhs, rhs, op_name)
+            builder.store_var(target, result)
+
+        def _getattr(context, builder, target, value, attr=None):
+            builder.store_var(target, DeferredMethodCall(value, _lower_impl))
+
+        return _getattr
+
+    for attrname in _INT_STR_STR_OPS:
+        lower_getattr(mlir_string, attrname)(_make_lower_binary_int(attrname))
+
+    def _make_lower_binary_bool(op_name):
+        def _lower_impl(builder, target, args, kwargs):
+            lhs = _load_as_view(builder, args[0])
+            rhs = _any_var_to_view(builder, args[1])
+            result = call_string_bool_str_str_mlir(lhs, rhs, op_name)
+            builder.store_var(target, result)
+
+        def _getattr(context, builder, target, value, attr=None):
+            builder.store_var(target, DeferredMethodCall(value, _lower_impl))
+
+        return _getattr
+
+    for attrname in ("startswith", "endswith"):
+        lower_getattr(mlir_string, attrname)(_make_lower_binary_bool(attrname))
+
+    def _lower_replace_impl(builder, target, args, kwargs):
+        src = _load_as_view(builder, args[0])
+        old = _any_var_to_view(builder, args[1])
+        new = _any_var_to_view(builder, args[2])
+        result = lower_replace(builder.mlir_gpu_module, src, old, new)
+        builder.store_var(target, result)
+
+    def _lower_replace_getattr(context, builder, target, value, attr=None):
+        builder.store_var(
+            target, DeferredMethodCall(value, _lower_replace_impl)
         )
 
-    # ``+`` (concatenation): the first string-producing op, allocates via NRT
-    typing_registry.register_global(operator.add)(ConcatMLIRStringTemplate)
-    for lhs_ty, rhs_ty in _STR_COMBOS:
-        lowering_registry.lower(operator.add, lhs_ty, rhs_ty)(_lower_concat_op)
+    lower_getattr(mlir_string, "replace")(_lower_replace_getattr)
 
-    # ``out[i] = s`` marshalling a produced string into an output array
-    lowering_registry.lower(
+    def _make_lower_upper_or_lower(mlir_fn):
+        def _lower_impl(builder, target, args, kwargs):
+            str_view = _any_var_to_view(builder, args[0])
+            flags_const = _i64_const_from_ptr(
+                int(get_character_flags_table_ptr())
+            )
+            cases_const = _i64_const_from_ptr(
+                int(get_character_cases_table_ptr())
+            )
+            special_const = _i64_const_from_ptr(
+                int(get_special_case_mapping_table_ptr())
+            )
+            result = mlir_fn(
+                builder.mlir_gpu_module,
+                str_view,
+                flags_const,
+                cases_const,
+                special_const,
+            )
+            builder.store_var(target, result)
+
+        def _getattr(context, builder, target, value, attr=None):
+            builder.store_var(target, DeferredMethodCall(value, _lower_impl))
+
+        return _getattr
+
+    lower_getattr(mlir_string, "upper")(
+        _make_lower_upper_or_lower(lower_upper)
+    )
+    lower_getattr(mlir_string, "lower")(
+        _make_lower_upper_or_lower(lower_lower)
+    )
+
+    def _make_lower_strip(mlir_fn):
+        def _lower_impl(builder, target, args, kwargs):
+            str_view = _any_var_to_view(builder, args[0])
+            strip_view = (
+                _any_var_to_view(builder, args[1]) if len(args) > 1 else None
+            )
+            result = mlir_fn(builder.mlir_gpu_module, str_view, strip_view)
+            builder.store_var(target, result)
+
+        def _getattr(context, builder, target, value, attr=None):
+            builder.store_var(target, DeferredMethodCall(value, _lower_impl))
+
+        return _getattr
+
+    lower_getattr(mlir_string, "strip")(_make_lower_strip(lower_strip))
+    lower_getattr(mlir_string, "lstrip")(_make_lower_strip(lower_lstrip))
+    lower_getattr(mlir_string, "rstrip")(_make_lower_strip(lower_rstrip))
+
+    def _lower_len(builder, target, args, kwargs):
+        str_view = _load_as_view(builder, args[0])
+        builder.store_var(target, lower_len_value(builder, str_view))
+
+    lower(len, mlir_string)(_lower_len)
+
+    def _lower_contains(builder, target, args, kwargs):
+        lhs = _any_var_to_view(builder, args[0])
+        rhs = _any_var_to_view(builder, args[1])
+        result = lower_contains(lhs, rhs)
+        builder.store_var(target, result)
+
+    lower(operator.contains, mlir_string, mlir_string)(_lower_contains)
+    lower(operator.contains, mlir_string, types.StringLiteral)(_lower_contains)
+    lower(operator.contains, types.StringLiteral, mlir_string)(_lower_contains)
+
+    def _lower_concat(builder, target, args, kwargs):
+        lhs = _any_var_to_view(builder, args[0])
+        rhs = _any_var_to_view(builder, args[1])
+        result = lower_concat(builder.mlir_gpu_module, lhs, rhs)
+        builder.store_var(target, result)
+
+    lower(operator.add, mlir_string, mlir_string)(_lower_concat)
+    lower(operator.add, mlir_string, types.StringLiteral)(_lower_concat)
+    lower(operator.add, types.StringLiteral, mlir_string)(_lower_concat)
+
+    # === setitem: CPointer(mlir_string)[int] = mlir_string ===
+    def _lower_setitem_cpointer_mlir_string(builder, target, args, kwargs):
+        from numba_cuda_mlir.lowering_utilities import convert
+
+        ptr, idx, val = [builder.load_var(a) for a in args]
+        cs_ty = builder.get_mlir_type(mlir_string)
+        ptr_ty = llvm.PointerType.get()
+        GEP_DYNAMIC = -2147483648
+        idx_i64 = convert(idx, T.i64())
+        element_ptr = llvm.getelementptr(
+            ptr_ty, ptr, [idx_i64], [GEP_DYNAMIC], cs_ty, None
+        )
+        llvm.store(value=val, addr=element_ptr)
+        meminfo = llvm.extractvalue(ptr_ty, val, [0])
+        nrt_incref_ty = mlir_ir.FunctionType.get([ptr_ty], [])
+        callee = get_or_insert_function(
+            "NRT_incref", nrt_incref_ty, builder.mlir_gpu_module
+        )
+        func.call(result=[], callee=callee.name.value, operands_=[meminfo])
+
+    lower(
         operator.setitem,
         types.CPointer(mlir_string),
         types.Integer,
         types.Any,
     )(_lower_setitem_cpointer_mlir_string)
 
-    # ``NRT_decref(s)`` for the teardown/freeing kernel
-    typing_registry.register_global(NRT_decref)(NRTDecrefMLIRStringTemplate)
-    lowering_registry.lower(NRT_decref, mlir_string)(_lower_nrt_decref)
+    # getitem for unmasked mlir_string. Registered on the shared
+    # ``lowering_registry`` (the per-module ``LoweringRegistry()`` in
+    # ``string_lowering_impl`` is not consulted by the getitem dispatch),
+    # keyed on the abstract ``Integer`` so literal indices match too.
+    def _lower_getitem_int(builder, target, args, kwargs):
+        ms_val = builder.load_var(args[0])
+        idx_val = builder.load_var(args[1])
+        data = ms_extract_data(ms_val)
+        nbytes = ms_extract_nbytes(ms_val)
+        idx_i64 = builder.mlir_convert(idx_val, T.i64())
+        result = string_getitem_int_core(
+            builder.mlir_gpu_module, data, nbytes, idx_i64
+        )
+        builder.store_var(target, result)
 
-    # one-string-arg methods on mlir_string and Masked(mlir_string):
-    # startswith/endswith (-> bool) and find/rfind/count (-> int32)
-    for name, impl_fn in {**_BOOL_METHODS, **_INT_METHODS}.items():
-        getattr_fn = _make_lower_binary(impl_fn)
-        lowering_registry.lower_getattr(mlir_string, name)(getattr_fn)
-        lowering_registry.lower_getattr(_masked_string, name)(getattr_fn)
+    lower(operator.getitem, mlir_string, types.Integer)(_lower_getitem_int)
 
-    # no-arg character-class predicates (isalpha ...) -> bool / Masked(bool)
-    for name, impl_fn in _IS_METHODS.items():
-        getattr_fn = _make_lower_is(impl_fn)
-        lowering_registry.lower_getattr(mlir_string, name)(getattr_fn)
-        lowering_registry.lower_getattr(_masked_string, name)(getattr_fn)
+    def _lower_getitem_slice(builder, target, args, kwargs):
+        ms_val = builder.load_var(args[0])
+        slice_val = builder.load_var(args[1])
+        data = ms_extract_data(ms_val)
+        nbytes = ms_extract_nbytes(ms_val)
+        result = string_getitem_slice_core(
+            builder.mlir_gpu_module, data, nbytes, slice_val
+        )
+        builder.store_var(target, result)
 
-    # strip/lstrip/rstrip (optional chars arg) -> (masked) mlir_string
-    for name, strip_impl in _STRIP_METHODS.items():
-        strip_getattr = _make_lower_strip(strip_impl)
-        lowering_registry.lower_getattr(mlir_string, name)(strip_getattr)
-        lowering_registry.lower_getattr(_masked_string, name)(strip_getattr)
+    lower(operator.getitem, mlir_string, types.slice2_type)(
+        _lower_getitem_slice
+    )
 
 
 _register()

@@ -1,203 +1,49 @@
-# SPDX-FileCopyrightText: Copyright (c) 2020-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2026, NVIDIA CORPORATION.
 # SPDX-License-Identifier: Apache-2.0
-"""``mlir_string`` scalar string type and its kernel-launch marshalling."""
+"""
+cudf-side typing glue for string UDFs.
+
+MLIRStringType and all its method typing live in cudf.core.udf.mlir_backend.string_typing_impl.
+This module provides:
+  - ManagedStrArrayWrapper (typeof -> CPointer(mlir_string))
+  - MLIRStringArgHandler (kernel arg marshalling)
+  - NRT_decref sentinel + typing
+  - StringLiteral -> mlir_string cast typing
+"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-import numpy as np
-from numba_cuda_mlir import types
-from numba_cuda_mlir._mlir import ir
-from numba_cuda_mlir._mlir.dialects import llvm
-from numba_cuda_mlir.models import PrimitiveModel, register_model
+from numba_cuda_mlir.extending import typing_registry
+from numba_cuda_mlir.numba_cuda import types
 from numba_cuda_mlir.numba_cuda.extending import typeof_impl
-
-if TYPE_CHECKING:
-    from numba_cuda_mlir.numba_cuda.datamodel.manager import DataModelManager
-
-
-class MLIRStringType(types.Type):
-    """NRT-managed owned string: ``{ptr meminfo, ptr data, i64 nbytes}``.
-
-    ``data`` points at a raw UTF-8 byte buffer and ``nbytes`` is its byte
-    length. ``meminfo`` is the NRT ``MemInfo`` pointer used for lifetime
-    management of *owned* (allocated) strings; read-only strings that borrow
-    an existing buffer (e.g. a column element consumed by ``len``) carry a
-    null ``meminfo`` and are never freed.
-    """
-
-    # ABI size: 8 (meminfo) + 8 (data) + 8 (nbytes) = 24 bytes. Must match the
-    # device struct layout the marshalling helpers and string lowerings use.
-    _extensionty_size = 24
-    np_dtype: np.dtype[np.object_] = np.dtype("object")
-
-    def __init__(self) -> None:
-        super().__init__(name="mlir_string")
-
-    @property
-    def is_internal(self) -> bool:
-        """Whether numba can represent this type as a plain numpy array.
-
-        Returns
-        -------
-        bool
-            Always ``False``: ``mlir_string`` is an extension type that must be
-            passed to kernels as a ``CPointer`` (not an Array/memref).
-        """
-        return False
-
-    @property
-    def return_as(self) -> MLIRStringType:
-        """The type used when a value of this type is returned from a UDF.
-
-        Returns
-        -------
-        MLIRStringType
-            ``self``.
-        """
-        return self
-
+from numba_cuda_mlir.numba_cuda.typing import signature as nb_signature
+from numba_cuda_mlir.numba_cuda.typing.templates import AbstractTemplate
+from cudf.core.udf.mlir_backend.string_types import MLIRStringType
 
 mlir_string = MLIRStringType()
-
-
-@register_model(MLIRStringType)
-class MLIRStringModel(PrimitiveModel):
-    """Data model for ``mlir_string``: ``{ptr meminfo, ptr data, i64 nbytes}``.
-
-    Field 0 (``meminfo``) is the NRT ``MemInfo`` pointer for lifetime
-    management, field 1 (``data``) points at the raw UTF-8 byte buffer, and
-    field 2 (``nbytes``) is the byte length.
-
-    Parameters
-    ----------
-    data_model_manager : DataModelManager
-        The numba data model manager.
-    string_type : MLIRStringType
-        The front-end (``mlir_string``) type being modeled.
-    """
-
-    _fields = ("meminfo", "data", "nbytes")
-
-    def __init__(
-        self,
-        data_model_manager: DataModelManager,
-        string_type: MLIRStringType,
-    ) -> None:
-        be_type = llvm.StructType.get_literal(
-            [
-                llvm.PointerType.get(),  # meminfo
-                llvm.PointerType.get(),  # data (char*)
-                ir.IntegerType.get_signless(64),  # nbytes
-            ]
-        )
-        super().__init__(data_model_manager, string_type, be_type)
-
-    def has_nrt_meminfo(self) -> bool:
-        """Whether this type carries an NRT ``MemInfo``.
-
-        Returns
-        -------
-        bool
-            Always ``True`` -- ``mlir_string`` owns its buffer via ``meminfo``.
-        """
-        return True
-
-    def get_nrt_meminfo(self, value):
-        """Extract the NRT ``MemInfo`` pointer (field 0).
-
-        Parameters
-        ----------
-        value : ir.Value
-            An ``mlir_string`` SSA value.
-
-        Returns
-        -------
-        ir.Value
-            The ``meminfo`` pointer.
-        """
-        return llvm.extractvalue(llvm.PointerType.get(), value, [0])
-
-    def get_field_position(self, name):
-        """Index of a named struct field.
-
-        Parameters
-        ----------
-        name : str
-            Field name (``"meminfo"``, ``"data"``, or ``"nbytes"``).
-
-        Returns
-        -------
-        int
-            The field's position within the struct.
-        """
-        return self._fields.index(name)
+size_type = types.int32
 
 
 class ManagedStrArrayWrapper:
-    """Host-side wrapper whose ``typeof`` is ``CPointer(mlir_string)``.
+    """Wrapper so typeof() returns CPointer(mlir_string) for the output buffer."""
 
-    Wraps a device buffer holding an array of ``mlir_string`` structs so that
-    numba-cuda-mlir's dispatch types it as a pointer to ``mlir_string`` rather
-    than inferring a raw ``uint8`` array from ``__cuda_array_interface__``.
-
-    Parameters
-    ----------
-    buffer : rmm.DeviceBuffer or cudf.core.buffer.Buffer
-        Device buffer holding a contiguous array of ``mlir_string`` structs;
-        must expose a ``.ptr`` device address.
-    """
-
-    def __init__(self, buffer) -> None:
+    def __init__(self, buffer):
         self._buffer = buffer
 
     @property
     def ptr(self):
-        """Device address of the wrapped buffer.
-
-        Returns
-        -------
-        int
-            The device pointer of the underlying buffer.
-        """
         return self._buffer.ptr
 
 
 @typeof_impl.register(ManagedStrArrayWrapper)
-def _typeof_mlir_str_array_wrapper(val, c) -> types.CPointer:
+def _typeof_mlir_str_array_wrapper(val, c):
     return types.CPointer(mlir_string)
 
 
 class MLIRStringArgHandler:
-    """Kernel-launch extension that marshals ``mlir_string`` pointers.
+    """Converts mlir_string* to raw pointer arguments for kernel launch."""
 
-    A ``CPointer(mlir_string)`` argument is passed to the kernel as the raw
-    device address (``uint64``). The tuple form carries an accompanying
-    validity mask for nullable string columns.
-    """
-
-    def prepare_args(self, ty: types.Type, val, **kwargs) -> tuple:
-        """Marshal a ``mlir_string`` pointer argument for a kernel launch.
-
-        Parameters
-        ----------
-        ty : types.Type
-            The numba type of the argument.
-        val : object
-            The host-side argument value (a wrapper exposing ``.ptr``, or a
-            tuple whose first element is one).
-        **kwargs
-            Additional launch context (unused).
-
-        Returns
-        -------
-        tuple
-            ``(type, value)`` for the kernel: a bare ``CPointer(mlir_string)``
-            becomes ``(uint64, device_ptr)``; a ``(pointer, mask)`` tuple keeps
-            its type with the pointer replaced by its device address; other
-            arguments pass through unchanged.
-        """
+    def prepare_args(self, ty, val, **kwargs):
         if isinstance(ty, types.CPointer) and isinstance(
             ty.dtype, MLIRStringType
         ):
@@ -218,15 +64,30 @@ mlir_string_arg_handler = MLIRStringArgHandler()
 
 
 def NRT_decref(st):
-    """Sentinel for an explicit ``NRT_decref`` on an ``mlir_string``.
+    pass
 
-    Typed and lowered in
-    :mod:`cudf.core.udf.mlir_backend.strings_lowering`. Used by the host-side
-    freeing kernel that releases a column of produced strings once they have
-    been copied out (the teardown half of the string-return marshalling).
 
-    Parameters
-    ----------
-    st : mlir_string
-        The string whose ``MemInfo`` reference should be released.
-    """
+def _register():
+    # --- Typing: NRT_decref(mlir_string) -> void ---
+    class NRT_decrefTemplate(AbstractTemplate):
+        key = NRT_decref
+
+        def generic(self, args, kws):
+            if len(args) == 1 and isinstance(args[0], MLIRStringType):
+                return nb_signature(types.void, mlir_string)
+            return None
+
+    typing_registry.register_global(
+        NRT_decref, types.Function(NRT_decrefTemplate)
+    )
+
+    # --- Cast: StringLiteral -> mlir_string ---
+    class CastStringLiteralToMLIRString(AbstractTemplate):
+        key = "cast"
+
+        def generic(self, args, kws):
+            if isinstance(args[0], types.StringLiteral):
+                return nb_signature(mlir_string, args[0])
+
+
+_register()

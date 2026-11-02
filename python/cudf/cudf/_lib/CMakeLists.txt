@@ -1,17 +1,11 @@
 # =============================================================================
 # cmake-format: off
-# SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION.
 # SPDX-License-Identifier: Apache-2.0
 # cmake-format: on
 # =============================================================================
 
-set(cython_sources strings_udf.pyx)
-set(linked_libraries cudf::cudf)
-
-rapids_cython_create_modules(
-  CXX
-  SOURCE_FILES "${cython_sources}"
-  LINKED_LIBRARIES "${linked_libraries}" ASSOCIATED_TARGETS cudf
-)
-
-target_link_libraries(strings_udf PUBLIC cudf_strings_udf)
+# strings_udf.pyx and cudf_strings_udf have been removed --
+# Unicode tables are now embedded in the cuDF MLIR backend
+# (cudf.core.udf.mlir_backend.unicode), and all string/groupby device
+# operations are pure MLIR via numba-cuda-mlir.
