@@ -159,50 +159,67 @@ class CoopIdxMinTemplate(AbstractTemplate):
 _SUPPORTED_DTYPES = (types.float64, types.float32, types.int64, types.int32)
 
 
-def _make_attrs_class(dtype):
-    ca_ty = CooperativeArrayType(dtype)
+@registry.register_attr
+class CooperativeArrayAttr(AttributeTemplate):
+    """Reduction attributes for every ``CooperativeArrayType`` instance.
 
-    @registry.register_attr
-    class _Attrs(AttributeTemplate):
-        key = ca_ty
+    A single class-keyed template (like the legacy ``GroupAttr``) so that
+    columns of unsupported dtypes - modelled with a ``Poison`` element type -
+    raise a clear ``UDFError`` when used, while a UDF that never touches them
+    still compiles.
+    """
 
-        def resolve_size(self, mod):
-            return types.int64
+    key = CooperativeArrayType
 
-        def resolve_sum(self, mod):
-            return types.BoundFunction(CoopSumTemplate, ca_ty)
+    @staticmethod
+    def _require_supported(mod):
+        if isinstance(mod.dtype, types.Poison):
+            raise UDFError(
+                "Use of a column of an unsupported dtype detected within a "
+                "GroupBy.apply() UDF. Only columns of the following dtypes may "
+                "be used through the GroupBy.apply() JIT engine: "
+                f"{[str(t) for t in _SUPPORTED_DTYPES]}"
+            )
 
-        def resolve_mean(self, mod):
-            return types.BoundFunction(CoopMeanTemplate, ca_ty)
+    def resolve_size(self, mod):
+        self._require_supported(mod)
+        return types.int64
 
-        def resolve_min(self, mod):
-            return types.BoundFunction(CoopMinTemplate, ca_ty)
+    def resolve_sum(self, mod):
+        self._require_supported(mod)
+        return types.BoundFunction(CoopSumTemplate, mod)
 
-        def resolve_max(self, mod):
-            return types.BoundFunction(CoopMaxTemplate, ca_ty)
+    def resolve_mean(self, mod):
+        self._require_supported(mod)
+        return types.BoundFunction(CoopMeanTemplate, mod)
 
-        def resolve_std(self, mod):
-            return types.BoundFunction(CoopStdTemplate, ca_ty)
+    def resolve_min(self, mod):
+        self._require_supported(mod)
+        return types.BoundFunction(CoopMinTemplate, mod)
 
-        def resolve_var(self, mod):
-            return types.BoundFunction(CoopVarTemplate, ca_ty)
+    def resolve_max(self, mod):
+        self._require_supported(mod)
+        return types.BoundFunction(CoopMaxTemplate, mod)
 
-        def resolve_corr(self, mod):
-            return types.BoundFunction(CoopCorrTemplate, ca_ty)
+    def resolve_std(self, mod):
+        self._require_supported(mod)
+        return types.BoundFunction(CoopStdTemplate, mod)
 
-        def resolve_idxmax(self, mod):
-            return types.BoundFunction(CoopIdxMaxTemplate, ca_ty)
+    def resolve_var(self, mod):
+        self._require_supported(mod)
+        return types.BoundFunction(CoopVarTemplate, mod)
 
-        def resolve_idxmin(self, mod):
-            return types.BoundFunction(CoopIdxMinTemplate, ca_ty)
+    def resolve_corr(self, mod):
+        self._require_supported(mod)
+        return types.BoundFunction(CoopCorrTemplate, mod)
 
-    _Attrs.__name__ = f"CooperativeArray{dtype}Attrs"
-    _Attrs.__qualname__ = _Attrs.__name__
-    return _Attrs
+    def resolve_idxmax(self, mod):
+        self._require_supported(mod)
+        return types.BoundFunction(CoopIdxMaxTemplate, mod)
 
-
-for _dt in _SUPPORTED_DTYPES:
-    _make_attrs_class(_dt)
+    def resolve_idxmin(self, mod):
+        self._require_supported(mod)
+        return types.BoundFunction(CoopIdxMinTemplate, mod)
 
 
 _ca_f64 = CooperativeArrayType(types.float64)

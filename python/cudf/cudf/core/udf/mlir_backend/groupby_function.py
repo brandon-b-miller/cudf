@@ -59,7 +59,21 @@ def _get_frame_groupby_type(dtype, index_dtype):
     for i, (name, info) in enumerate(dtype.fields.items()):
         elemdtype = info[0]
         title = info[2] if len(info) == 3 else None
-        ty = numpy_support.from_dtype(elemdtype)
+        if elemdtype in SUPPORTED_GROUPBY_NUMPY_TYPES:
+            ty = numpy_support.from_dtype(elemdtype)
+        else:
+            # Model unsupported dtypes (e.g. uint8, strings) as Poison so a UDF
+            # that never touches the column still compiles, while any use of it
+            # raises a UDFError (see CooperativeArrayAttr).
+            try:
+                inner = numpy_support.from_dtype(elemdtype)
+            except Exception:
+                from cudf.core.udf.mlir_backend.strings_typing import (
+                    mlir_string,
+                )
+
+                inner = mlir_string
+            ty = types.Poison(inner)
         coopty = CooperativeArrayType(ty)
         infos = {
             "type": coopty,

@@ -234,10 +234,14 @@ JIT_UNARY_REDUCTION_SPECIAL_VALUE_DTYPES = {"float32", "float64"}
 
 
 def _nans_unary_reduction_xfails(func, dtype):
+    # NaN skipping (pandas skipna=True) is now implemented for min/max/sum and
+    # for integer mean/var/std via the MLIR backend. The remaining gaps in
+    # https://github.com/NVIDIA/cudf/issues/14860 are floating-point
+    # mean/var/std and idxmin/idxmax.
     return (
         func in {"var", "std", "mean"}
-        and str(dtype) in {"int64", "float32", "float64"}
-    ) or (func in {"idxmax", "idxmin", "sum"} and dtype.kind == "f")
+        and str(dtype) in {"float32", "float64"}
+    ) or (func in {"idxmax", "idxmin"} and dtype.kind == "f")
 
 
 NANS_UNARY_REDUCTION_XFAIL_PARAMS = [
