@@ -48,12 +48,23 @@ class CooperativeArrayConstructorTemplate(AbstractTemplate):
 # Attribute typing: .size, .sum()
 # ---------------------------------------------------------------------------
 
+def _mean_like_result(dtype):
+    # pandas mean/var/std of float32 stays float32; everything else -> float64.
+    return types.float32 if dtype == types.float32 else types.float64
+
+
 class CoopSumTemplate(AbstractTemplate):
     key = "CooperativeArray.sum"
 
     def generic(self, args, kws):
         if len(args) == 0 and not kws:
-            return nb_signature(self.this.dtype, recvr=self.this)
+            # pandas promotes integer sums to int64 (overflow-safe).
+            retty = (
+                types.int64
+                if isinstance(self.this.dtype, types.Integer)
+                else self.this.dtype
+            )
+            return nb_signature(retty, recvr=self.this)
 
 
 class CoopMeanTemplate(AbstractTemplate):
@@ -61,7 +72,7 @@ class CoopMeanTemplate(AbstractTemplate):
 
     def generic(self, args, kws):
         if len(args) == 0 and not kws:
-            return nb_signature(types.float64, recvr=self.this)
+            return nb_signature(_mean_like_result(self.this.dtype), recvr=self.this)
 
 
 class CoopMinTemplate(AbstractTemplate):
@@ -85,7 +96,7 @@ class CoopStdTemplate(AbstractTemplate):
 
     def generic(self, args, kws):
         if len(args) == 0 and not kws:
-            return nb_signature(types.float64, recvr=self.this)
+            return nb_signature(_mean_like_result(self.this.dtype), recvr=self.this)
 
 
 class CoopVarTemplate(AbstractTemplate):
@@ -93,7 +104,7 @@ class CoopVarTemplate(AbstractTemplate):
 
     def generic(self, args, kws):
         if len(args) == 0 and not kws:
-            return nb_signature(types.float64, recvr=self.this)
+            return nb_signature(_mean_like_result(self.this.dtype), recvr=self.this)
 
 
 

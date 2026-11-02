@@ -272,12 +272,16 @@ def _build_sum_module(dtype):
 
     with context.get_context(), ir.Location.unknown():
         elem_ty = _dtype_mlir_type(dtype)
+        is_float = isinstance(elem_ty, (ir.F64Type, ir.F32Type))
+        # pandas promotes integer sums to int64 (overflow-safe); floats keep
+        # their width. Accumulate (and store partials) in the accumulator type.
+        acc_ty = elem_ty if is_float else T.i64()
         module = ir.Module.create()
         with ir.InsertionPoint(module.body):
             gpu_mod = gpu.GPUModuleOp(sym_name=f"{name}_module")
 
         body = gpu_mod.bodyRegion.blocks.append()
-        ft = ir.FunctionType.get([_ptr(), T.i64(), _ptr()], [elem_ty])
+        ft = ir.FunctionType.get([_ptr(), T.i64(), _ptr()], [acc_ty])
         with ir.InsertionPoint(body):
             fn = func.FuncOp(name=name, type=ft, visibility="public")
             entry = fn.add_entry_block()
@@ -288,22 +292,29 @@ def _build_sum_module(dtype):
 
             tid = _tid_x()
             bdim = _bdim_x()
-            zero_elem = _zero_val(elem_ty)
+            zero_acc = _zero_val(acc_ty)
             zero = _const_i64(0)
             one = _const_i64(1)
 
-            partial = scf.ForOp(tid, size, bdim, [zero_elem])
+            partial = scf.ForOp(tid, size, bdim, [zero_acc])
             with ir.InsertionPoint(partial.body):
                 i = partial.induction_variable
                 acc = partial.body.arguments[1]
                 elem = llvm.load(elem_ty, _gep_typed(data, i, elem_ty))
-                if isinstance(elem_ty, (ir.F64Type, ir.F32Type)):
+                if is_float:
+                    # Skip NaN (pandas skipna=True): sum of all-NaN is 0.0.
+                    is_nan = arith.cmpf(
+                        arith.CmpFPredicate.UNO, elem, elem
+                    )
+                    elem = arith.select(is_nan, zero_acc, elem)
                     new_acc = arith.addf(acc, elem)
                 else:
+                    if elem_ty != acc_ty:
+                        elem = arith.extsi(acc_ty, elem)
                     new_acc = arith.addi(acc, elem)
                 scf.YieldOp([new_acc])
 
-            llvm.store(partial.results[0], _gep_typed3(shm3, tid, elem_ty))
+            llvm.store(partial.results[0], _gep_typed3(shm3, tid, acc_ty))
             gpu.barrier()
 
             half_bdim = arith.shrui(bdim, one)
@@ -320,18 +331,18 @@ def _build_sum_module(dtype):
                 rif = scf.IfOp(in_range, [], has_else=False)
                 with ir.InsertionPoint(rif.then_block):
                     partner = arith.addi(tid, s)
-                    my_v = llvm.load(elem_ty, _gep_typed3(shm3, tid, elem_ty))
-                    p_v = llvm.load(elem_ty, _gep_typed3(shm3, partner, elem_ty))
-                    if isinstance(elem_ty, (ir.F64Type, ir.F32Type)):
+                    my_v = llvm.load(acc_ty, _gep_typed3(shm3, tid, acc_ty))
+                    p_v = llvm.load(acc_ty, _gep_typed3(shm3, partner, acc_ty))
+                    if is_float:
                         summed = arith.addf(my_v, p_v)
                     else:
                         summed = arith.addi(my_v, p_v)
-                    llvm.store(summed, _gep_typed3(shm3, tid, elem_ty))
+                    llvm.store(summed, _gep_typed3(shm3, tid, acc_ty))
                     scf.YieldOp([])
                 gpu.barrier()
                 scf.YieldOp([arith.shrui(s, one)])
 
-            result = llvm.load(elem_ty, _gep_typed3(shm3, zero, elem_ty))
+            result = llvm.load(acc_ty, _gep_typed3(shm3, zero, acc_ty))
             func.ReturnOp([result])
 
         return str(module)

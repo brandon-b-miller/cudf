@@ -277,12 +277,15 @@ def _lower_sum(builder, target, args, kwargs):
     size = ca_extract_size(ca_val)
 
     shm = _shm_base_ptr(builder)
+    # pandas promotes integer sums to int64; floats keep their width. The
+    # device function returns this accumulator type.
+    acc_ty = T.i64() if isinstance(dtype, nb_types.Integer) else elem_ty
     fname = sum_func_name(dtype)
-    ft = ir.FunctionType.get([_ptr(), T.i64(), _ptr()], [elem_ty])
+    ft = ir.FunctionType.get([_ptr(), T.i64(), _ptr()], [acc_ty])
     gm = builder.mlir_gpu_module
     callee = get_or_insert_function(fname, ft, gm)
     result = func.call(
-        result=[elem_ty], callee=callee.name.value,
+        result=[acc_ty], callee=callee.name.value,
         operands_=[data, size, shm],
     )
     builder.store_var(target, result)
@@ -338,6 +341,9 @@ def _lower_mean(builder, target, args, kwargs):
         result=[f64_ty], callee=callee.name.value,
         operands_=[data, size, shm],
     )
+    # pandas mean of float32 stays float32; truncate the f64 accumulator.
+    if dtype == nb_types.float32:
+        result = arith.truncf(ir.F32Type.get(), result)
     builder.store_var(target, result)
 
     register_needed_func(builder.metadata, ("mean", _dtype_tag(dtype)))
@@ -493,6 +499,8 @@ def _lower_std(builder, target, args, kwargs):
         result=[f64_ty], callee=callee.name.value,
         operands_=[data, size, shm],
     )
+    if dtype == nb_types.float32:
+        result = arith.truncf(ir.F32Type.get(), result)
     builder.store_var(target, result)
 
     register_needed_func(builder.metadata, ("std", _dtype_tag(dtype)))
@@ -542,6 +550,8 @@ def _lower_var(builder, target, args, kwargs):
         result=[f64_ty], callee=callee.name.value,
         operands_=[data, size, shm],
     )
+    if dtype == nb_types.float32:
+        result = arith.truncf(ir.F32Type.get(), result)
     builder.store_var(target, result)
 
     register_needed_func(builder.metadata, ("var", _dtype_tag(dtype)))
