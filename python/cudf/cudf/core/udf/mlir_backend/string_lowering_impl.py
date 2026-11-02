@@ -487,7 +487,12 @@ def lower_replace(gpu_module, src, old, new):
         bj = b_inner.body.arguments[0]
         bmm = b_inner.body.arguments[1]
         with ir.InsertionPoint(b_inner.body):
-            b_hidx = arith.addi(si, bj)
+            # Clamp the read index: when can_match is false (remaining < o_nb)
+            # si+bj can run past the source buffer. can_match still gates the
+            # match decision, but the load itself must stay in bounds.
+            b_hidx = arith.minui(
+                arith.addi(si, bj), arith.subi(s_nb, one)
+            )
             b_hb = llvm.load(T.i8(), _gep_byte_offset(s_data, b_hidx))
             b_ob = llvm.load(T.i8(), _gep_byte_offset(o_data, bj))
             b_ne = arith.cmpi(arith.CmpIPredicate.ne, b_hb, b_ob)
@@ -1443,15 +1448,23 @@ def string_getitem_int_core(gpu_module, data, nbytes_i64, idx_i64):
     idx_i64:    i64 index (may be negative)
     """
     zero = _const_i64(0)
+    one = _const_i64(1)
     is_neg = arith.cmpi(arith.CmpIPredicate.slt, idx_i64, zero)
     adjusted = arith.addi(idx_i64, nbytes_i64)
     idx_i64 = arith.select(is_neg, adjusted, idx_i64)
 
-    one = _const_i64(1)
+    # Bounds: an index outside [0, nbytes) - including values below -len(s) -
+    # yields an empty string rather than an out-of-bounds read.
+    ge0 = arith.cmpi(arith.CmpIPredicate.sge, idx_i64, zero)
+    ltn = arith.cmpi(arith.CmpIPredicate.slt, idx_i64, nbytes_i64)
+    in_range = arith.andi(ge0, ltn)
+    safe_idx = arith.select(in_range, idx_i64, zero)
+    out_len = arith.select(in_range, one, zero)
+
     mi, out_data = allocate_mlir_string(gpu_module, one)
-    src = _gep_byte_offset(data, idx_i64)
-    llvm.intr_memcpy(out_data, src, one, False)
-    return build_mlir_string(mi, out_data, one)
+    src = _gep_byte_offset(data, safe_idx)
+    llvm.intr_memcpy(out_data, src, out_len, False)
+    return build_mlir_string(mi, out_data, out_len)
 
 
 def string_getitem_slice_core(gpu_module, data, nbytes_i64, slice_val):
