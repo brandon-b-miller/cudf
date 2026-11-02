@@ -54,7 +54,7 @@ from numba_cuda_mlir.lowering_utilities import (
 )
 from numba_cuda_mlir.numba_cuda import types
 
-from cudf.core.udf.mlir_backend.unicode import (
+from pylibcudf.strings.char_types import (
     get_character_cases_table_ptr,
     get_character_flags_table_ptr,
     get_special_case_mapping_table_ptr,
