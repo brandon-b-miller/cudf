@@ -177,6 +177,14 @@ def corr_func_name(dtype):
     return f"_coop_corr_{_dtype_tag(dtype)}"
 
 
+def idxmax_func_name(dtype):
+    return f"_coop_idxmax_{_dtype_tag(dtype)}"
+
+
+def idxmin_func_name(dtype):
+    return f"_coop_idxmin_{_dtype_tag(dtype)}"
+
+
 def exp_func_name(dtype):
     return f"_coop_exp_{_dtype_tag(dtype)}"
 
@@ -805,6 +813,140 @@ def _build_corr_module(dtype):
         return str(module)
 
 
+def _build_idx_module(dtype, *, is_max):
+    """Build ``_coop_idx{max,min}_{dtype}(ptr data, ptr index, i64 size, ptr shm) -> i64``.
+
+    Returns the int64 index label of the max/min element in the group, with
+    ties broken by the smallest index (pandas semantics). NaN values are
+    skipped. Uses two shared-memory scratch arrays (value + index) and a
+    tree reduction that carries the (value, index) pair.
+    """
+    name = idxmax_func_name(dtype) if is_max else idxmin_func_name(dtype)
+    _SHM_IDX_OFFSET = _SHM_REDUCTION_OFFSET + _MAX_BLOCK_SIZE * 8
+
+    with context.get_context(), ir.Location.unknown():
+        elem_ty = _dtype_mlir_type(dtype)
+        is_float = isinstance(elem_ty, (ir.F64Type, ir.F32Type))
+        i64 = T.i64()
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            gpu_mod = gpu.GPUModuleOp(sym_name=f"{name}_module")
+
+        body = gpu_mod.bodyRegion.blocks.append()
+        ft = ir.FunctionType.get([_ptr(), _ptr(), i64, _ptr()], [i64])
+        with ir.InsertionPoint(body):
+            fn = func.FuncOp(name=name, type=ft, visibility="public")
+            entry = fn.add_entry_block()
+
+        with ir.InsertionPoint(entry):
+            data, index, size, shm_base = fn.arguments
+            shm_val = _shm3_base(shm_base, _SHM_REDUCTION_OFFSET)
+            shm_idx = _shm3_base(shm_base, _SHM_IDX_OFFSET)
+
+            tid = _tid_x()
+            bdim = _bdim_x()
+            zero = _const_i64(0)
+            one = _const_i64(1)
+
+            # Sentinel "worst" value so empty/NaN-only threads always lose.
+            if is_float:
+                sentinel = arith.constant(
+                    elem_ty, float("-inf") if is_max else float("inf")
+                )
+            else:
+                width = elem_ty.width
+                sentinel_int = (
+                    -(2 ** (width - 1)) if is_max else (2 ** (width - 1) - 1)
+                )
+                sentinel = arith.constant(elem_ty, sentinel_int)
+            idx_sentinel = arith.constant(i64, 2**63 - 1)
+
+            def _is_better(cand, best, cand_i, best_i):
+                # cand strictly beats best, or ties and has a smaller index.
+                if is_float:
+                    strict = arith.cmpf(
+                        arith.CmpFPredicate.OGT if is_max
+                        else arith.CmpFPredicate.OLT,
+                        cand, best,
+                    )
+                    eq = arith.cmpf(arith.CmpFPredicate.OEQ, cand, best)
+                else:
+                    strict = arith.cmpi(
+                        arith.CmpIPredicate.sgt if is_max
+                        else arith.CmpIPredicate.slt,
+                        cand, best,
+                    )
+                    eq = arith.cmpi(arith.CmpIPredicate.eq, cand, best)
+                i_smaller = arith.cmpi(arith.CmpIPredicate.slt, cand_i, best_i)
+                return arith.ori(strict, arith.andi(eq, i_smaller))
+
+            partial = scf.ForOp(tid, size, bdim, [sentinel, idx_sentinel])
+            with ir.InsertionPoint(partial.body):
+                i = partial.induction_variable
+                best_v = partial.body.arguments[1]
+                best_i = partial.body.arguments[2]
+                elem = llvm.load(elem_ty, _gep_typed(data, i, elem_ty))
+                idx = llvm.load(i64, _gep_typed(index, i, i64))
+                better = _is_better(elem, best_v, idx, best_i)
+                if is_float:
+                    not_nan = arith.cmpf(
+                        arith.CmpFPredicate.ORD, elem, elem
+                    )
+                    better = arith.andi(better, not_nan)
+                new_v = arith.select(better, elem, best_v)
+                new_i = arith.select(better, idx, best_i)
+                scf.YieldOp([new_v, new_i])
+
+            llvm.store(partial.results[0], _gep_typed3(shm_val, tid, elem_ty))
+            llvm.store(partial.results[1], _gep_typed3(shm_idx, tid, i64))
+            gpu.barrier()
+
+            half_bdim = arith.shrui(bdim, one)
+            tree = scf.WhileOp([i64], [half_bdim])
+            bb = tree.before.blocks.append(i64)
+            with ir.InsertionPoint(bb):
+                s_b = bb.arguments[0]
+                scf.ConditionOp(
+                    arith.cmpi(arith.CmpIPredicate.ugt, s_b, zero), [s_b])
+            ab = tree.after.blocks.append(i64)
+            with ir.InsertionPoint(ab):
+                s = ab.arguments[0]
+                in_range = arith.cmpi(arith.CmpIPredicate.ult, tid, s)
+                rif = scf.IfOp(in_range, [], has_else=False)
+                with ir.InsertionPoint(rif.then_block):
+                    partner = arith.addi(tid, s)
+                    mv = llvm.load(elem_ty, _gep_typed3(shm_val, tid, elem_ty))
+                    mi = llvm.load(i64, _gep_typed3(shm_idx, tid, i64))
+                    pv = llvm.load(
+                        elem_ty, _gep_typed3(shm_val, partner, elem_ty))
+                    pi = llvm.load(i64, _gep_typed3(shm_idx, partner, i64))
+                    take_p = _is_better(pv, mv, pi, mi)
+                    llvm.store(
+                        arith.select(take_p, pv, mv),
+                        _gep_typed3(shm_val, tid, elem_ty),
+                    )
+                    llvm.store(
+                        arith.select(take_p, pi, mi),
+                        _gep_typed3(shm_idx, tid, i64),
+                    )
+                    scf.YieldOp([])
+                gpu.barrier()
+                scf.YieldOp([arith.shrui(s, one)])
+
+            result = llvm.load(i64, _gep_typed3(shm_idx, zero, i64))
+            func.ReturnOp([result])
+
+        return str(module)
+
+
+def _build_idxmax_module(dtype):
+    return _build_idx_module(dtype, is_max=True)
+
+
+def _build_idxmin_module(dtype):
+    return _build_idx_module(dtype, is_max=False)
+
+
 def _build_exp_module(dtype):
     """Build MLIR module for _coop_exp_{dtype}(ptr data, i64 size, ptr shm) -> void.
 
@@ -1074,6 +1216,14 @@ def _compile_cooperative_func(func_key, cc):
         _, dtype_name = func_key
         dtype = _TAG_TO_DTYPE[dtype_name]
         mlir_str = _build_corr_module(dtype)
+    elif kind == "idxmax":
+        _, dtype_name = func_key
+        dtype = _TAG_TO_DTYPE[dtype_name]
+        mlir_str = _build_idxmax_module(dtype)
+    elif kind == "idxmin":
+        _, dtype_name = func_key
+        dtype = _TAG_TO_DTYPE[dtype_name]
+        mlir_str = _build_idxmin_module(dtype)
     elif kind == "exp":
         _, dtype_name = func_key
         dtype = _TAG_TO_DTYPE[dtype_name]

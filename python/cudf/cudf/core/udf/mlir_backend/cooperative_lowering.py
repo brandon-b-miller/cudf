@@ -82,11 +82,13 @@ def _call_nrt(gpu_module, name, arg_types, result_types, args):
 # ---------------------------------------------------------------------------
 
 def _ca_struct_type():
-    return llvm.StructType.get_literal([_ptr(), _ptr(), T.i64()])
+    return llvm.StructType.get_literal([_ptr(), _ptr(), T.i64(), _ptr()])
 
 
-def build_cooperative_array(meminfo, data, size_i64):
+def build_cooperative_array(meminfo, data, size_i64, index_data=None):
     ty = _ca_struct_type()
+    if index_data is None:
+        index_data = llvm.ZeroOp(_ptr())
     undef = llvm.UndefOp(ty)
     with_mi = llvm.insertvalue(
         container=undef, value=meminfo,
@@ -96,9 +98,13 @@ def build_cooperative_array(meminfo, data, size_i64):
         container=with_mi, value=data,
         position=ir.DenseI64ArrayAttr.get([1]),
     )
-    return llvm.insertvalue(
+    with_size = llvm.insertvalue(
         container=with_data, value=size_i64,
         position=ir.DenseI64ArrayAttr.get([2]),
+    )
+    return llvm.insertvalue(
+        container=with_size, value=index_data,
+        position=ir.DenseI64ArrayAttr.get([3]),
     )
 
 
@@ -112,6 +118,10 @@ def ca_extract_data(val):
 
 def ca_extract_size(val):
     return llvm.extractvalue(T.i64(), val, [2])
+
+
+def ca_extract_index(val):
+    return llvm.extractvalue(_ptr(), val, [3])
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +644,78 @@ for _dt in _SUPPORTED_DTYPES:
 
 
 # ---------------------------------------------------------------------------
+# .idxmax()/.idxmin() reductions: return the int64 index label of the extremum
+# ---------------------------------------------------------------------------
+
+def _lower_idx(builder, target, args, kwargs, *, is_max):
+    from cudf.core.udf.mlir_backend.cooperative_device_funcs import (
+        idxmax_func_name, idxmin_func_name, register_needed_func, _dtype_tag,
+    )
+
+    self_var = args[0]
+    ca_val = builder.load_var(self_var)
+    ca_type = builder.get_numba_type(self_var.name)
+    dtype = ca_type.dtype
+
+    data = ca_extract_data(ca_val)
+    index = ca_extract_index(ca_val)
+    size = ca_extract_size(ca_val)
+
+    shm = _shm_base_ptr(builder)
+    i64_ty = T.i64()
+    fname = idxmax_func_name(dtype) if is_max else idxmin_func_name(dtype)
+    ft = ir.FunctionType.get([_ptr(), _ptr(), T.i64(), _ptr()], [i64_ty])
+    gm = builder.mlir_gpu_module
+    callee = get_or_insert_function(fname, ft, gm)
+    result = func.call(
+        result=[i64_ty], callee=callee.name.value,
+        operands_=[data, index, size, shm],
+    )
+    builder.store_var(target, result)
+
+    kind = "idxmax" if is_max else "idxmin"
+    register_needed_func(builder.metadata, (kind, _dtype_tag(dtype)))
+
+
+def _make_idx_with_release(is_max):
+    def _impl(builder, target, args, kwargs):
+        self_var = args[0]
+        _lower_idx(builder, target, args, kwargs, is_max=is_max)
+        ca_val = builder.load_var(self_var)
+        mi = ca_extract_meminfo(ca_val)
+        _call_nrt(builder.mlir_gpu_module, "NRT_decref", [_ptr()], [], [mi])
+    return _impl
+
+
+_lower_idxmax_with_release = _make_idx_with_release(True)
+_lower_idxmin_with_release = _make_idx_with_release(False)
+
+
+for _dt in _SUPPORTED_DTYPES:
+    def _make_idx_lower(ca_type):
+        @registry.lower_getattr(ca_type, "idxmax")
+        def _lower_ca_idxmax_attr(context, builder, target, value, attr=None):
+            ca_val = builder.load_var(value)
+            mi = ca_extract_meminfo(ca_val)
+            _call_nrt(builder.mlir_gpu_module, "NRT_incref", [_ptr()], [], [mi])
+            builder.store_var(
+                target,
+                DeferredMethodCall(value, _lower_idxmax_with_release),
+            )
+
+        @registry.lower_getattr(ca_type, "idxmin")
+        def _lower_ca_idxmin_attr(context, builder, target, value, attr=None):
+            ca_val = builder.load_var(value)
+            mi = ca_extract_meminfo(ca_val)
+            _call_nrt(builder.mlir_gpu_module, "NRT_incref", [_ptr()], [], [mi])
+            builder.store_var(
+                target,
+                DeferredMethodCall(value, _lower_idxmin_with_release),
+            )
+    _make_idx_lower(CooperativeArrayType(_dt))
+
+
+# ---------------------------------------------------------------------------
 # .exp() element-wise: thin call to separately-compiled device function
 # ---------------------------------------------------------------------------
 
@@ -837,6 +919,21 @@ def _register_cooperative_array_constructor():
         data_ptr = _get_base_ptr_from_memref(array_val)
         null_ptr = llvm.ZeroOp(_ptr())
         result = build_cooperative_array(null_ptr, data_ptr, size_i64)
+        builder.store_var(target, result)
+
+    @registry.lower(_ctor, nb_types.Array, nb_types.Integer, nb_types.Array)
+    def _lower_ctor_with_index(builder, target, args, kwargs):
+        array_val = builder.load_var(args[0])
+        size_val = builder.load_var(args[1])
+        index_val = builder.load_var(args[2])
+        from numba_cuda_mlir.lowering_utilities import convert
+        size_i64 = convert(size_val, T.i64())
+        data_ptr = _get_base_ptr_from_memref(array_val)
+        index_ptr = _get_base_ptr_from_memref(index_val)
+        null_ptr = llvm.ZeroOp(_ptr())
+        result = build_cooperative_array(
+            null_ptr, data_ptr, size_i64, index_ptr
+        )
         builder.store_var(target, result)
 
 

@@ -18,7 +18,8 @@ row_initializer_template = """\
 
 group_initializer_template = """\
         arr_{idx} = input_col_{idx}[offset[block_id]:offset[block_id+1]]
-        dataframe_group[_col_names[{idx}]] = CooperativeArray(arr_{idx}, size)
+        idx_{idx} = index[offset[block_id]:offset[block_id+1]]
+        dataframe_group[_col_names[{idx}]] = CooperativeArray(arr_{idx}, size, idx_{idx})
 """
 
 scalar_kernel_template = """

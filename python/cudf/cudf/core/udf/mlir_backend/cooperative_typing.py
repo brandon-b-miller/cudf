@@ -36,11 +36,23 @@ class CooperativeArrayConstructorTemplate(AbstractTemplate):
     key = CooperativeArray
 
     def generic(self, args, kws):
-        if len(args) == 2 and not kws:
+        if kws:
+            return None
+        if len(args) == 2:
             arr, size = args
             if isinstance(arr, types.Array) and isinstance(size, types.Integer):
                 return nb_signature(
                     CooperativeArrayType(arr.dtype), arr, size
+                )
+        elif len(args) == 3:
+            arr, size, index = args
+            if (
+                isinstance(arr, types.Array)
+                and isinstance(size, types.Integer)
+                and isinstance(index, types.Array)
+            ):
+                return nb_signature(
+                    CooperativeArrayType(arr.dtype), arr, size, index
                 )
 
 
@@ -127,6 +139,22 @@ class CoopCorrTemplate(AbstractTemplate):
         return nb_signature(types.float64, other, recvr=self.this)
 
 
+class CoopIdxMaxTemplate(AbstractTemplate):
+    key = "CooperativeArray.idxmax"
+
+    def generic(self, args, kws):
+        if len(args) == 0 and not kws:
+            return nb_signature(types.int64, recvr=self.this)
+
+
+class CoopIdxMinTemplate(AbstractTemplate):
+    key = "CooperativeArray.idxmin"
+
+    def generic(self, args, kws):
+        if len(args) == 0 and not kws:
+            return nb_signature(types.int64, recvr=self.this)
+
+
 
 _SUPPORTED_DTYPES = (types.float64, types.float32, types.int64, types.int32)
 
@@ -161,6 +189,12 @@ def _make_attrs_class(dtype):
 
         def resolve_corr(self, mod):
             return types.BoundFunction(CoopCorrTemplate, ca_ty)
+
+        def resolve_idxmax(self, mod):
+            return types.BoundFunction(CoopIdxMaxTemplate, ca_ty)
+
+        def resolve_idxmin(self, mod):
+            return types.BoundFunction(CoopIdxMinTemplate, ca_ty)
 
     _Attrs.__name__ = f"CooperativeArray{dtype}Attrs"
     _Attrs.__qualname__ = _Attrs.__name__

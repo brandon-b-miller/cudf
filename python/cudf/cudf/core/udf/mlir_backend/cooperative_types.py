@@ -10,17 +10,19 @@ from numba_cuda_mlir.numba_cuda.types import Type
 
 
 class CooperativeArrayType(Type):
-    """Block-cooperative array: {ptr meminfo, ptr data, i64 size}.
+    """Block-cooperative array: {ptr meminfo, ptr data, i64 size, ptr index}.
 
     Represents an array that a CUDA block of threads processes together.
     Input views (from column data) have meminfo=null. In this cuDF build only
     the read-only reduction surface is exposed, so intermediates are not
-    NRT-allocated here.
+    NRT-allocated here. ``index`` points to the group's int64 index slice
+    (parallel to ``data``); it is null when no index is available and is only
+    consumed by ``idxmin``/``idxmax``.
 
-    ABI size: 8 (meminfo) + 8 (data) + 8 (size) = 24 bytes.
+    ABI size: 8 (meminfo) + 8 (data) + 8 (size) + 8 (index) = 32 bytes.
     """
 
-    _extensionty_size = 24
+    _extensionty_size = 32
     np_dtype: np.dtype[np.object_] = np.dtype("object")
 
     def __init__(self, dtype):
@@ -54,7 +56,7 @@ class CooperativeArrayModel(PrimitiveModel):
     Field 2 (size) is the number of elements.
     """
 
-    _fields = ("meminfo", "data", "size")
+    _fields = ("meminfo", "data", "size", "index")
 
     def __init__(self, dmm, fe_type):
         be_type = llvm.StructType.get_literal(
@@ -62,6 +64,7 @@ class CooperativeArrayModel(PrimitiveModel):
                 llvm.PointerType.get(),  # meminfo
                 llvm.PointerType.get(),  # data
                 ir.IntegerType.get_signless(64),  # size
+                llvm.PointerType.get(),  # index (int64 slice; null if absent)
             ]
         )
         super().__init__(dmm, fe_type, be_type)
