@@ -173,6 +173,10 @@ def var_func_name(dtype):
     return f"_coop_var_{_dtype_tag(dtype)}"
 
 
+def corr_func_name(dtype):
+    return f"_coop_corr_{_dtype_tag(dtype)}"
+
+
 def exp_func_name(dtype):
     return f"_coop_exp_{_dtype_tag(dtype)}"
 
@@ -681,6 +685,126 @@ def _build_var_module(dtype):
     )
 
 
+def _build_corr_module(dtype):
+    """Build ``_coop_corr_{dtype}(ptr lhs, ptr rhs, i64 size, ptr shm) -> f64``.
+
+    Pearson correlation = covar(l, r) / (std(l) * std(r)), with sample
+    (ddof=1) covariance/variance to match pandas. Returns NaN when either
+    variance is zero. Integer inputs only (float corr is rejected in typing).
+    """
+    from numba_cuda_mlir._mlir.dialects import math as mlir_math
+
+    name = corr_func_name(dtype)
+
+    with context.get_context(), ir.Location.unknown():
+        elem_ty = _dtype_mlir_type(dtype)
+        f64_ty = ir.F64Type.get()
+        module = ir.Module.create()
+        with ir.InsertionPoint(module.body):
+            gpu_mod = gpu.GPUModuleOp(sym_name=f"{name}_module")
+
+        body = gpu_mod.bodyRegion.blocks.append()
+        ft = ir.FunctionType.get([_ptr(), _ptr(), T.i64(), _ptr()], [f64_ty])
+        with ir.InsertionPoint(body):
+            fn = func.FuncOp(name=name, type=ft, visibility="public")
+            entry = fn.add_entry_block()
+
+        with ir.InsertionPoint(entry):
+            lhs, rhs, size, shm_base = fn.arguments
+            shm3 = _shm3_base(shm_base, _SHM_REDUCTION_OFFSET)
+
+            tid = _tid_x()
+            bdim = _bdim_x()
+            zero = _const_i64(0)
+            one = _const_i64(1)
+            zero_f64 = arith.constant(f64_ty, 0.0)
+
+            def _to_f64(val):
+                if isinstance(elem_ty, ir.F64Type):
+                    return val
+                if isinstance(elem_ty, ir.F32Type):
+                    return arith.extf(f64_ty, val)
+                return arith.sitofp(f64_ty, val)
+
+            # One pass: accumulate S_l, S_r, S_ll, S_rr, S_lr per thread.
+            partial = scf.ForOp(
+                tid, size, bdim,
+                [zero_f64, zero_f64, zero_f64, zero_f64, zero_f64],
+            )
+            with ir.InsertionPoint(partial.body):
+                i = partial.induction_variable
+                a_l, a_r, a_ll, a_rr, a_lr = partial.body.arguments[1:6]
+                lv = _to_f64(llvm.load(elem_ty, _gep_typed(lhs, i, elem_ty)))
+                rv = _to_f64(llvm.load(elem_ty, _gep_typed(rhs, i, elem_ty)))
+                scf.YieldOp([
+                    arith.addf(a_l, lv),
+                    arith.addf(a_r, rv),
+                    arith.addf(a_ll, arith.mulf(lv, lv)),
+                    arith.addf(a_rr, arith.mulf(rv, rv)),
+                    arith.addf(a_lr, arith.mulf(lv, rv)),
+                ])
+
+            def _tree_sum(value):
+                """Block tree-reduce ``value`` (f64); broadcast total to all threads."""
+                llvm.store(value, _gep_typed3(shm3, tid, f64_ty))
+                gpu.barrier()
+                half = arith.shrui(bdim, one)
+                tree = scf.WhileOp([T.i64()], [half])
+                bb = tree.before.blocks.append(T.i64())
+                with ir.InsertionPoint(bb):
+                    s_b = bb.arguments[0]
+                    scf.ConditionOp(
+                        arith.cmpi(arith.CmpIPredicate.ugt, s_b, zero), [s_b])
+                ab = tree.after.blocks.append(T.i64())
+                with ir.InsertionPoint(ab):
+                    s = ab.arguments[0]
+                    in_range = arith.cmpi(arith.CmpIPredicate.ult, tid, s)
+                    rif = scf.IfOp(in_range, [], has_else=False)
+                    with ir.InsertionPoint(rif.then_block):
+                        partner = arith.addi(tid, s)
+                        mv = llvm.load(f64_ty, _gep_typed3(shm3, tid, f64_ty))
+                        pv = llvm.load(
+                            f64_ty, _gep_typed3(shm3, partner, f64_ty))
+                        llvm.store(
+                            arith.addf(mv, pv), _gep_typed3(shm3, tid, f64_ty))
+                        scf.YieldOp([])
+                    gpu.barrier()
+                    scf.YieldOp([arith.shrui(s, one)])
+                total = llvm.load(f64_ty, _gep_typed3(shm3, zero, f64_ty))
+                gpu.barrier()
+                return total
+
+            s_l = _tree_sum(partial.results[0])
+            s_r = _tree_sum(partial.results[1])
+            s_ll = _tree_sum(partial.results[2])
+            s_rr = _tree_sum(partial.results[3])
+            s_lr = _tree_sum(partial.results[4])
+
+            n_f64 = arith.uitofp(f64_ty, size)
+            one_f64 = arith.constant(f64_ty, 1.0)
+            n_minus_1 = arith.subf(n_f64, one_f64)
+            # Sample covariance/variance (ddof=1).
+            covar = arith.divf(
+                arith.subf(s_lr, arith.divf(arith.mulf(s_l, s_r), n_f64)),
+                n_minus_1,
+            )
+            var_l = arith.divf(
+                arith.subf(s_ll, arith.divf(arith.mulf(s_l, s_l), n_f64)),
+                n_minus_1,
+            )
+            var_r = arith.divf(
+                arith.subf(s_rr, arith.divf(arith.mulf(s_r, s_r), n_f64)),
+                n_minus_1,
+            )
+            denom = arith.mulf(mlir_math.sqrt(var_l), mlir_math.sqrt(var_r))
+            is_zero = arith.cmpf(arith.CmpFPredicate.OEQ, denom, zero_f64)
+            nan_f64 = arith.constant(f64_ty, float("nan"))
+            result = arith.select(is_zero, nan_f64, arith.divf(covar, denom))
+            func.ReturnOp([result])
+
+        return str(module)
+
+
 def _build_exp_module(dtype):
     """Build MLIR module for _coop_exp_{dtype}(ptr data, i64 size, ptr shm) -> void.
 
@@ -946,6 +1070,10 @@ def _compile_cooperative_func(func_key, cc):
         _, dtype_name = func_key
         dtype = _TAG_TO_DTYPE[dtype_name]
         mlir_str = _build_var_module(dtype)
+    elif kind == "corr":
+        _, dtype_name = func_key
+        dtype = _TAG_TO_DTYPE[dtype_name]
+        mlir_str = _build_corr_module(dtype)
     elif kind == "exp":
         _, dtype_name = func_key
         dtype = _TAG_TO_DTYPE[dtype_name]

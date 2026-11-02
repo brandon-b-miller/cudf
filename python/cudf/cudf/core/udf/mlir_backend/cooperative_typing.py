@@ -107,6 +107,26 @@ class CoopVarTemplate(AbstractTemplate):
             return nb_signature(_mean_like_result(self.this.dtype), recvr=self.this)
 
 
+class CoopCorrTemplate(AbstractTemplate):
+    key = "CooperativeArray.corr"
+
+    def generic(self, args, kws):
+        if len(args) != 1 or kws:
+            return None
+        other = args[0]
+        if not isinstance(other, CooperativeArrayType):
+            return None
+        dt = self.this.dtype
+        if not isinstance(dt, types.Integer):
+            # Correlation of floating types is not yet supported (#13839).
+            raise UDFError(
+                f"Series.corr(Series) is not supported for "
+                f"({dt}, {other.dtype}) within JIT GroupBy apply. "
+                f"Supported features are listed at: {_UDF_DOC_URL}"
+            )
+        return nb_signature(types.float64, other, recvr=self.this)
+
+
 
 _SUPPORTED_DTYPES = (types.float64, types.float32, types.int64, types.int32)
 
@@ -138,6 +158,9 @@ def _make_attrs_class(dtype):
 
         def resolve_var(self, mod):
             return types.BoundFunction(CoopVarTemplate, ca_ty)
+
+        def resolve_corr(self, mod):
+            return types.BoundFunction(CoopCorrTemplate, ca_ty)
 
     _Attrs.__name__ = f"CooperativeArray{dtype}Attrs"
     _Attrs.__qualname__ = _Attrs.__name__

@@ -578,6 +578,62 @@ for _dt in _SUPPORTED_DTYPES:
 
 
 # ---------------------------------------------------------------------------
+# .corr(other) reduction: thin call to separately-compiled device function
+# ---------------------------------------------------------------------------
+
+def _lower_corr(builder, target, args, kwargs):
+    """Emit a call to the outlined _coop_corr_{dtype} device function."""
+    from cudf.core.udf.mlir_backend.cooperative_device_funcs import (
+        corr_func_name, register_needed_func, _dtype_tag,
+    )
+
+    self_var = args[0]
+    other_var = args[1]
+    lhs_val = builder.load_var(self_var)
+    rhs_val = builder.load_var(other_var)
+    ca_type = builder.get_numba_type(self_var.name)
+    dtype = ca_type.dtype
+
+    lhs_data = ca_extract_data(lhs_val)
+    rhs_data = ca_extract_data(rhs_val)
+    size = ca_extract_size(lhs_val)
+
+    shm = _shm_base_ptr(builder)
+    f64_ty = ir.F64Type.get()
+    fname = corr_func_name(dtype)
+    ft = ir.FunctionType.get([_ptr(), _ptr(), T.i64(), _ptr()], [f64_ty])
+    gm = builder.mlir_gpu_module
+    callee = get_or_insert_function(fname, ft, gm)
+    result = func.call(
+        result=[f64_ty], callee=callee.name.value,
+        operands_=[lhs_data, rhs_data, size, shm],
+    )
+    builder.store_var(target, result)
+
+    register_needed_func(builder.metadata, ("corr", _dtype_tag(dtype)))
+
+
+def _lower_corr_with_release(builder, target, args, kwargs):
+    """Run corr, then release the extra reference taken at getattr time."""
+    self_var = args[0]
+    _lower_corr(builder, target, args, kwargs)
+    ca_val = builder.load_var(self_var)
+    mi = ca_extract_meminfo(ca_val)
+    _call_nrt(builder.mlir_gpu_module, "NRT_decref", [_ptr()], [], [mi])
+
+
+for _dt in _SUPPORTED_DTYPES:
+    def _make_corr_lower(ca_type):
+        @registry.lower_getattr(ca_type, "corr")
+        def _lower_ca_corr_attr(context, builder, target, value, attr=None):
+            ca_val = builder.load_var(value)
+            mi = ca_extract_meminfo(ca_val)
+            _call_nrt(builder.mlir_gpu_module, "NRT_incref", [_ptr()], [], [mi])
+            builder.store_var(target, DeferredMethodCall(value, _lower_corr_with_release))
+    _make_corr_lower(CooperativeArrayType(_dt))
+
+
+# ---------------------------------------------------------------------------
 # .exp() element-wise: thin call to separately-compiled device function
 # ---------------------------------------------------------------------------
 
